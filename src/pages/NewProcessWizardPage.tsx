@@ -3,21 +3,37 @@ import { Link, Navigate, useNavigate } from "react-router-dom";
 import { AppShell } from "../components/AppShell";
 import { useAuth } from "../auth/AuthContext";
 import {
+  addMonths,
   computeDeadlines,
   eligibilityLabel,
   progressForStatus,
   resolveEligibility,
   resolvePrepDefaults,
 } from "../lib/firstEvaluation";
+import {
+  computePeriodicDeadlines,
+  sheetLabel,
+  type PeriodicSheet,
+} from "../lib/periodicEvaluation";
+import { OSP_JOB_TITLES } from "../lib/ospPositions";
 import { supabase } from "../lib/supabase";
 import { isStaffRole, type PrepServiceStatus } from "../types";
 
-const STEPS = [
+type EvalKind = "first" | "periodic";
+
+const STEPS_FIRST = [
+  "Typ oceny",
   "Dane pracownika",
   "Kwalifikacja",
   "Służba przygotowawcza",
   "Obsada ról",
-  "Terminy",
+] as const;
+
+const STEPS_PERIODIC = [
+  "Typ oceny",
+  "Dane pracownika",
+  "Arkusz i cykl",
+  "Obsada ról",
 ] as const;
 
 export function NewProcessWizardPage() {
@@ -26,6 +42,10 @@ export function NewProcessWizardPage() {
   const [step, setStep] = useState(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [evalKind, setEvalKind] = useState<EvalKind>("first");
+  const [sheet, setSheet] = useState<PeriodicSheet>("C");
+  const [cycleAnchorAt, setCycleAnchorAt] = useState("");
 
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -70,18 +90,26 @@ export function NewProcessWizardPage() {
   const [unitHeadName, setUnitHeadName] = useState("");
   const [unitHeadSame, setUnitHeadSame] = useState(true);
 
-  const [reportFrom, setReportFrom] = useState("");
-  const [reportTo, setReportTo] = useState("");
+  const steps = evalKind === "first" ? STEPS_FIRST : STEPS_PERIODIC;
 
-  const deadlines = useMemo(() => {
+  const firstDeadlines = useMemo(() => {
     if (!hiredAt) return null;
     return computeDeadlines({
       hiredAt,
       contractEndAt: contractEndAt || null,
-      reportFrom: reportFrom || null,
-      reportTo: reportTo || null,
+      reportFrom: null,
+      reportTo: null,
     });
-  }, [hiredAt, contractEndAt, reportFrom, reportTo]);
+  }, [hiredAt, contractEndAt]);
+
+  const periodicDeadlines = useMemo(() => {
+    const anchor = cycleAnchorAt || hiredAt;
+    if (!anchor) return null;
+    return computePeriodicDeadlines({
+      cycleAnchorAt: anchor,
+      processStartedAt: new Date().toISOString().slice(0, 10),
+    });
+  }, [cycleAnchorAt, hiredAt]);
 
   if (loading) {
     return (
@@ -96,37 +124,49 @@ export function NewProcessWizardPage() {
   }
 
   function canNext(): boolean {
-    if (step === 0) {
+    if (step === 0) return true;
+    if (step === 1) {
       return Boolean(firstName && lastName && orgUnit && jobTitle && hiredAt);
     }
-    if (step === 4) {
-      return Boolean(deadlines);
+    if (evalKind === "first") {
+      if (step === steps.length - 1) return Boolean(firstDeadlines);
+      return true;
     }
+    // periodic
+    if (step === 2) return Boolean(periodicDeadlines);
+    if (step === steps.length - 1) return Boolean(periodicDeadlines);
     return true;
   }
 
   function goNext() {
     setError(null);
-    if (step === 1 && eligibility === "not_eligible") {
-      setError(
-        "Według odpowiedzi pracownik nie podlega pierwszej ocenie. Możesz wrócić i poprawić kwalifikację albo anulować.",
-      );
-    }
-    if (step === 1) {
+    if (evalKind === "first" && step === 2) {
+      if (eligibility === "not_eligible") {
+        setError(
+          "Według odpowiedzi pracownik nie podlega pierwszej ocenie. Możesz wrócić i poprawić kwalifikację albo anulować.",
+        );
+      }
       setPrepStatus(prepDefaults.prepServiceStatus);
       setExamRequired(prepDefaults.examRequired);
     }
-    if (step === 4 && hiredAt && !reportFrom && deadlines) {
-      setReportFrom(deadlines.reportDueFrom);
-      setReportTo(deadlines.reportDueTo);
+    if (evalKind === "periodic" && step === 1 && hiredAt && !cycleAnchorAt) {
+      setCycleAnchorAt(hiredAt);
     }
-    setStep((s) => Math.min(s + 1, STEPS.length - 1));
+    setStep((s) => Math.min(s + 1, steps.length - 1));
   }
 
   async function createProcess() {
-    if (!user || !deadlines || !hiredAt) return;
-    if (eligibility === "not_eligible") {
-      setError("Nie można utworzyć procesu — pracownik nie podlega pierwszej ocenie.");
+    if (!user || !hiredAt) return;
+
+    if (evalKind === "first") {
+      if (!firstDeadlines) return;
+      if (eligibility === "not_eligible") {
+        setError(
+          "Nie można utworzyć procesu — pracownik nie podlega pierwszej ocenie.",
+        );
+        return;
+      }
+    } else if (!periodicDeadlines) {
       return;
     }
 
@@ -156,40 +196,67 @@ export function NewProcessWizardPage() {
       return;
     }
 
-    const finalDeadlines = computeDeadlines({
-      hiredAt,
-      contractEndAt: contractEndAt || null,
-      reportFrom: reportFrom || deadlines.reportDueFrom,
-      reportTo: reportTo || deadlines.reportDueTo,
-    });
+    const base = {
+      employee_id: employee.id,
+      supervisor_id: user.id,
+      unit_head_id: unitHeadSame ? user.id : null,
+      office_name: "Ministerstwo Cyfryzacji",
+      employee_org_unit: orgUnit.trim(),
+      employee_job_title: jobTitle.trim(),
+      status: "draft" as const,
+      progress_percent: progressForStatus("draft"),
+      year: new Date(hiredAt).getFullYear(),
+    };
+
+    const payload =
+      evalKind === "first"
+        ? {
+            ...base,
+            evaluation_type: "first" as const,
+            sheet_type: "first" as const,
+            eligibility_result: eligibility,
+            first_time_civil_service: firstTime,
+            is_substitute: isSubstitute,
+            is_ksap_graduate: isKsap,
+            is_higher_position: isHigher,
+            prep_service_status: effectivePrep,
+            exam_required: effectiveExam,
+            prep_service_end_at:
+              effectivePrep === "required" ? addMonths(hiredAt, 8) : null,
+            intro_talk_deadline: firstDeadlines!.introTalkDeadline,
+            report_due_from: firstDeadlines!.reportDueFrom,
+            report_due_to: firstDeadlines!.reportDueTo,
+            assessment_window_from: firstDeadlines!.assessmentWindowFrom,
+            assessment_window_to: firstDeadlines!.assessmentWindowTo,
+            nearest_deadline: firstDeadlines!.nearestDeadline,
+            extra_criteria: [],
+          }
+        : {
+            ...base,
+            evaluation_type: "periodic" as const,
+            sheet_type: sheet,
+            eligibility_result: null,
+            first_time_civil_service: null,
+            is_substitute: null,
+            is_ksap_graduate: null,
+            is_higher_position: null,
+            prep_service_status: null,
+            exam_required: false,
+            intro_talk_deadline: periodicDeadlines!.criteriaTalkDeadline,
+            report_due_from: null,
+            report_due_to: null,
+            assessment_window_from: periodicDeadlines!.assessmentWindowFrom,
+            assessment_window_to: periodicDeadlines!.assessmentWindowTo,
+            nearest_deadline: periodicDeadlines!.nearestDeadline,
+            cycle_anchor_at: periodicDeadlines!.cycleAnchorAt,
+            cycle_due_at: periodicDeadlines!.cycleDueAt,
+            next_cycle_due_at: periodicDeadlines!.nextCycleDueAt,
+            extra_criteria: [],
+          };
 
     const { data: caseRow, error: caseErr } = await supabase
       .from("evaluation_cases")
-      .insert({
-        evaluation_type: "first",
-        status: "draft",
-        employee_id: employee.id,
-        supervisor_id: user.id,
-        unit_head_id: unitHeadSame ? user.id : null,
-        office_name: "Ministerstwo Cyfryzacji",
-        employee_org_unit: orgUnit.trim(),
-        employee_job_title: jobTitle.trim(),
-        eligibility_result: eligibility,
-        first_time_civil_service: firstTime,
-        is_substitute: isSubstitute,
-        is_ksap_graduate: isKsap,
-        is_higher_position: isHigher,
-        prep_service_status: effectivePrep,
-        exam_required: effectiveExam,
-        intro_talk_deadline: finalDeadlines.introTalkDeadline,
-        report_due_from: finalDeadlines.reportDueFrom,
-        report_due_to: finalDeadlines.reportDueTo,
-        assessment_window_from: finalDeadlines.assessmentWindowFrom,
-        assessment_window_to: finalDeadlines.assessmentWindowTo,
-        nearest_deadline: finalDeadlines.nearestDeadline,
-        progress_percent: progressForStatus("draft"),
-        year: new Date(hiredAt).getFullYear(),
-      })
+      .insert(payload as Record<string, unknown>)
       .select("id")
       .single();
 
@@ -200,17 +267,20 @@ export function NewProcessWizardPage() {
       return;
     }
 
-    // unit_headName stored only in UI for MVP if different person without account
     void unitHeadName;
-
     navigate(`/procesy/${caseRow.id}`);
   }
 
   return (
-    <AppShell title="Kreator: nowy proces pierwszej oceny">
+    <AppShell title="Nowy proces">
       <div className="wizard">
-        <ol className="wizard-steps">
-          {STEPS.map((label, i) => (
+        <ol
+          className="wizard-steps"
+          style={{
+            gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))`,
+          }}
+        >
+          {steps.map((label, i) => (
             <li
               key={label}
               className={
@@ -223,8 +293,44 @@ export function NewProcessWizardPage() {
           ))}
         </ol>
 
-        <div className="panel wizard-panel">
+        <div className="wizard-panel">
           {step === 0 && (
+            <>
+              <h2>Typ oceny</h2>
+              <p className="muted">
+                Pierwsza ocena (arkusz A) albo ocena okresowa (arkusz B/C, cykl
+                24 miesięcy).
+              </p>
+              <div className="actions" style={{ marginTop: "0.75rem" }}>
+                <label className="check">
+                  <input
+                    type="radio"
+                    name="evalKind"
+                    checked={evalKind === "first"}
+                    onChange={() => {
+                      setEvalKind("first");
+                      setStep(0);
+                    }}
+                  />
+                  <span>Pierwsza ocena (arkusz A)</span>
+                </label>
+                <label className="check">
+                  <input
+                    type="radio"
+                    name="evalKind"
+                    checked={evalKind === "periodic"}
+                    onChange={() => {
+                      setEvalKind("periodic");
+                      setStep(0);
+                    }}
+                  />
+                  <span>Ocena okresowa (arkusz B lub C)</span>
+                </label>
+              </div>
+            </>
+          )}
+
+          {step === 1 && (
             <>
               <h2>Dane pracownika</h2>
               <div className="form grid-2">
@@ -249,23 +355,34 @@ export function NewProcessWizardPage() {
                   <input
                     value={orgUnit}
                     onChange={(e) => setOrgUnit(e.target.value)}
+                    placeholder="np. departament / wydział"
                     required
                   />
                 </label>
                 <label>
                   <span>Stanowisko *</span>
                   <input
+                    list="osp-job-titles"
                     value={jobTitle}
                     onChange={(e) => setJobTitle(e.target.value)}
+                    placeholder="Wybierz z listy OSP lub wpisz…"
                     required
                   />
+                  <datalist id="osp-job-titles">
+                    {OSP_JOB_TITLES.map((t) => (
+                      <option key={t} value={t} />
+                    ))}
+                  </datalist>
                 </label>
                 <label>
                   <span>Data nawiązania stosunku pracy *</span>
                   <input
                     type="date"
                     value={hiredAt}
-                    onChange={(e) => setHiredAt(e.target.value)}
+                    onChange={(e) => {
+                      setHiredAt(e.target.value);
+                      if (!cycleAnchorAt) setCycleAnchorAt(e.target.value);
+                    }}
                     required
                   />
                 </label>
@@ -281,7 +398,7 @@ export function NewProcessWizardPage() {
             </>
           )}
 
-          {step === 1 && (
+          {evalKind === "first" && step === 2 && (
             <>
               <h2>Kwalifikacja do pierwszej oceny</h2>
               <div className="form">
@@ -318,15 +435,13 @@ export function NewProcessWizardPage() {
                   <span>Wyższe stanowisko w służbie cywilnej</span>
                 </label>
               </div>
-              <div
-                className={`eligibility eligibility-${eligibility}`}
-              >
+              <div className={`eligibility eligibility-${eligibility}`}>
                 Wynik: <strong>{eligibilityLabel(eligibility)}</strong>
               </div>
             </>
           )}
 
-          {step === 2 && (
+          {evalKind === "first" && step === 3 && (
             <>
               <h2>Służba przygotowawcza</h2>
               <div className="form">
@@ -355,7 +470,65 @@ export function NewProcessWizardPage() {
             </>
           )}
 
-          {step === 3 && (
+          {evalKind === "periodic" && step === 2 && (
+            <>
+              <h2>Arkusz B/C i cykl 24 miesięcy</h2>
+              <p className="muted">
+                Termin sporządzenia oceny = kotwica cyklu + 24 miesiące. Kotwica
+                to data zakończenia poprzedniej oceny albo data zatrudnienia na
+                czas nieokreślony.
+              </p>
+              <div className="form">
+                <div className="actions" style={{ marginTop: 0 }}>
+                  <label className="check">
+                    <input
+                      type="radio"
+                      name="sheet"
+                      checked={sheet === "B"}
+                      onChange={() => setSheet("B")}
+                    />
+                    <span>{sheetLabel("B")}</span>
+                  </label>
+                  <label className="check">
+                    <input
+                      type="radio"
+                      name="sheet"
+                      checked={sheet === "C"}
+                      onChange={() => setSheet("C")}
+                    />
+                    <span>{sheetLabel("C")}</span>
+                  </label>
+                </div>
+                <label>
+                  <span>Kotwica cyklu *</span>
+                  <input
+                    type="date"
+                    value={cycleAnchorAt || hiredAt}
+                    onChange={(e) => setCycleAnchorAt(e.target.value)}
+                  />
+                </label>
+                {periodicDeadlines ? (
+                  <div className="deadline-grid">
+                    <div className="deadline-card">
+                      <span>Rozmowa o kryteriach (do)</span>
+                      <strong>{periodicDeadlines.criteriaTalkDeadline}</strong>
+                    </div>
+                    <div className="deadline-card">
+                      <span>Sporządzenie oceny (cykl)</span>
+                      <strong>{periodicDeadlines.cycleDueAt}</strong>
+                    </div>
+                    <div className="deadline-card">
+                      <span>Kolejny cykl (po tej ocenie)</span>
+                      <strong>{periodicDeadlines.nextCycleDueAt}</strong>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </>
+          )}
+
+          {((evalKind === "first" && step === 4) ||
+            (evalKind === "periodic" && step === 3)) && (
             <>
               <h2>Obsada ról</h2>
               <div className="form">
@@ -395,58 +568,6 @@ export function NewProcessWizardPage() {
             </>
           )}
 
-          {step === 4 && (
-            <>
-              <h2>Podsumowanie terminów</h2>
-              {!hiredAt ? (
-                <div className="alert alert-warn">
-                  Uzupełnij datę zatrudnienia w kroku 1.
-                </div>
-              ) : (
-                <>
-                  <div className="deadline-grid">
-                    <div className="deadline-card">
-                      <span>Rozmowa wstępna (do)</span>
-                      <strong>{deadlines?.introTalkDeadline}</strong>
-                    </div>
-                    <div className="deadline-card">
-                      <span>Okno sprawozdania</span>
-                      <strong>
-                        {deadlines?.reportDueFrom} — {deadlines?.reportDueTo}
-                      </strong>
-                    </div>
-                    <div className="deadline-card">
-                      <span>Okno oceny (do)</span>
-                      <strong>{deadlines?.assessmentWindowTo}</strong>
-                    </div>
-                  </div>
-                  <p className="muted">
-                    Możesz doprecyzować okno sprawozdania w dopuszczalnych
-                    granicach (po upływie 8 miesięcy od zatrudnienia).
-                  </p>
-                  <div className="form grid-2">
-                    <label>
-                      <span>Sprawozdanie od</span>
-                      <input
-                        type="date"
-                        value={reportFrom || deadlines?.reportDueFrom || ""}
-                        onChange={(e) => setReportFrom(e.target.value)}
-                      />
-                    </label>
-                    <label>
-                      <span>Sprawozdanie do</span>
-                      <input
-                        type="date"
-                        value={reportTo || deadlines?.reportDueTo || ""}
-                        onChange={(e) => setReportTo(e.target.value)}
-                      />
-                    </label>
-                  </div>
-                </>
-              )}
-            </>
-          )}
-
           {error ? <div className="alert alert-error">{error}</div> : null}
 
           <div className="wizard-nav">
@@ -463,7 +584,7 @@ export function NewProcessWizardPage() {
                   Wstecz
                 </button>
               ) : null}
-              {step < STEPS.length - 1 ? (
+              {step < steps.length - 1 ? (
                 <button
                   className="btn btn-primary"
                   type="button"
@@ -476,7 +597,11 @@ export function NewProcessWizardPage() {
                 <button
                   className="btn btn-primary"
                   type="button"
-                  disabled={saving || !canNext() || eligibility === "not_eligible"}
+                  disabled={
+                    saving ||
+                    !canNext() ||
+                    (evalKind === "first" && eligibility === "not_eligible")
+                  }
                   onClick={() => void createProcess()}
                 >
                   {saving ? "Tworzenie…" : "Utwórz proces"}

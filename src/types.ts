@@ -41,9 +41,27 @@ export type Employee = {
   created_at?: string;
 };
 
+export type EmployeeNoteTone = "positive" | "negative";
+
+export type EmployeeNote = {
+  id: string;
+  employee_id: string;
+  case_id: string | null;
+  author_id: string;
+  tone: EmployeeNoteTone;
+  subject: string;
+  body: string;
+  noted_at: string;
+  created_at?: string;
+};
+
+/** Arkusz: first = pierwsza ocena; B/C = ocena okresowa. */
+export type SheetType = "first" | "B" | "C";
+
 export type EvaluationCase = {
   id: string;
   evaluation_type: "first" | "periodic";
+  sheet_type?: SheetType | null;
   status: EvaluationStatus;
   employee_id: string;
   supervisor_id: string;
@@ -72,7 +90,25 @@ export type EvaluationCase = {
   report_submitted_at?: string | null;
   report_on_time?: boolean | null;
   report_notes?: string | null;
+  report_file_path?: string | null;
+  report_file_name?: string | null;
+  report_file_mime?: string | null;
+  report_file_size?: number | null;
+  report_file_uploaded_at?: string | null;
   assessment_interview_at?: string | null;
+  prep_service_end_at?: string | null;
+  interview_notes?: string | null;
+  partial_scores?: Record<string, number> | null;
+  indicator_answers?: Record<string, number> | null;
+  /** Max 3 kody kompetencji dodatkowych (arkusz B/C). */
+  extra_criteria?: string[] | null;
+  cycle_anchor_at?: string | null;
+  cycle_due_at?: string | null;
+  next_cycle_due_at?: string | null;
+  criteria_talk_at?: string | null;
+  verdict?: "positive" | "negative" | null;
+  verdict_justification?: string | null;
+  development_notes?: string | null;
   created_at?: string;
   employees?: Employee | Employee[] | null;
 };
@@ -94,11 +130,11 @@ export const ROLE_COLORS: Record<AppRole, string> = {
 };
 
 export const STATUS_LABELS: Record<EvaluationStatus, string> = {
-  draft: "Rozpoczęcie / rozmowa wstępna",
-  intro_done: "Po rozmowie wstępnej",
-  awaiting_report: "Oczekiwanie na sprawozdanie",
-  in_assessment: "Ocena kompetencji",
-  interview_done: "Po rozmowie oceniającej",
+  draft: "Rozmowa wstępna",
+  intro_done: "Okres oceny",
+  awaiting_report: "Okres oceny",
+  in_assessment: "Rozmowa i arkusz",
+  interview_done: "Rozmowa i arkusz",
   completed: "Zakończony",
   cancelled: "Anulowany",
 };

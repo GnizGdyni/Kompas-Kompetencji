@@ -1,7 +1,8 @@
 import type { EvaluationCase, EvaluationStatus } from "../types";
 import { progressForStatus } from "./firstEvaluation";
 
-export type StageId = 1 | 2 | 3 | 4 | 5 | 6;
+/** 3 połączone etapy procesu (zamiast 6 sztucznych kroków). */
+export type StageId = 1 | 2 | 3;
 
 export type StageDef = {
   id: StageId;
@@ -10,7 +11,7 @@ export type StageDef = {
   description: string;
 };
 
-export const STAGES: StageDef[] = [
+export const STAGES_FIRST: StageDef[] = [
   {
     id: 1,
     title: "Rozmowa wstępna",
@@ -20,60 +21,75 @@ export const STAGES: StageDef[] = [
   },
   {
     id: 2,
-    title: "Służba przygotowawcza",
-    short: "Służba",
+    title: "Okres oceny",
+    short: "Okres",
     description:
-      "Status służby przygotowawczej oraz wynik egzaminu (jeśli dotyczy).",
+      "Trwa służba przygotowawcza / obserwacja. Tu ustalasz datę rozmowy oceniającej, dodajesz sprawozdanie i gdy gotowe — rozpoczynasz rozmowę.",
   },
   {
     id: 3,
-    title: "Sprawozdanie",
-    short: "Sprawozdanie",
-    description:
-      "Złożenie sprawozdania z zadań (okres ≥ 7 miesięcy) w wyznaczonym oknie.",
-  },
-  {
-    id: 4,
-    title: "Rozmowa oceniająca",
+    title: "Rozmowa i arkusz",
     short: "Rozmowa",
     description:
-      "Omówienie postawy, postępów, relacji, terminowości, egzaminu i sprawozdania.",
-  },
-  {
-    id: 5,
-    title: "Ocena na piśmie",
-    short: "Arkusz",
-    description:
-      "Oceny cząstkowe 3/5/7, ocena łączna, uzasadnienie, wnioski rozwojowe, werdykt.",
-  },
-  {
-    id: 6,
-    title: "Wniosek do DG",
-    short: "Wniosek",
-    description:
-      "Wniosek kierującego komórką do dyrektora generalnego o dalsze zatrudnienie.",
+      "Rozmowa oceniająca: notatki na żywo oraz wypełnienie arkusza (oceny cząstkowe, werdykt, wnioski).",
   },
 ];
 
-/** Który etap jest aktywny na podstawie statusu sprawy. */
+export const STAGES_PERIODIC: StageDef[] = [
+  {
+    id: 1,
+    title: "Kryteria i termin",
+    short: "Kryteria",
+    description:
+      "Rozmowa o kryteriach (obowiązkowe + max 3 dodatkowe z OSP) i zapoznanie z terminem sporządzenia oceny (cykl 24 mies.).",
+  },
+  {
+    id: 2,
+    title: "Okres podlegający ocenie",
+    short: "Okres",
+    description:
+      "Obserwacja w cyklu oceny okresowej. Ustalasz datę rozmowy oceniającej i gdy gotowe — rozpoczynasz arkusz B/C.",
+  },
+  {
+    id: 3,
+    title: "Rozmowa i arkusz B/C",
+    short: "Rozmowa",
+    description:
+      "Rozmowa oceniająca i arkusz okresowy: wskaźniki (skala 1–9), średnia, poziom ogólny, werdykt i wnioski IPRZ.",
+  },
+];
+
+/** @deprecated użyj stagesForType — zostawione dla kompatybilności */
+export const STAGES = STAGES_FIRST;
+
+export function stagesForType(
+  evaluationType: "first" | "periodic" | string,
+): StageDef[] {
+  return evaluationType === "periodic" ? STAGES_PERIODIC : STAGES_FIRST;
+}
+
+/**
+ * Mapowanie statusów DB → etap UI
+ * draft → 1
+ * intro_done | awaiting_report → 2 (okres)
+ * in_assessment | interview_done → 3 (rozmowa+arkusz)
+ * completed → 3 done
+ */
 export function activeStageForStatus(
   status: EvaluationStatus,
-  progressPercent = 0,
+  _progressPercent = 0,
 ): StageId {
   switch (status) {
     case "draft":
       return 1;
     case "intro_done":
-      return 2;
     case "awaiting_report":
-      return 3;
+      return 2;
     case "in_assessment":
-      return 4;
     case "interview_done":
-      return 5;
+      return 3;
     case "completed":
-      // 90 = ocena domknięta, czeka wniosek (etap 6); 100 = całość
-      return progressPercent >= 100 ? 6 : 6;
+      return 3;
     case "cancelled":
       return 1;
   }
@@ -87,12 +103,8 @@ export function stageState(
   if (status === "cancelled") {
     return stageId === 1 ? "active" : "locked";
   }
-  if (status === "completed" && progressPercent >= 100) {
+  if (status === "completed") {
     return "done";
-  }
-  if (status === "completed" && progressPercent < 100) {
-    if (stageId <= 5) return "done";
-    return stageId === 6 ? "active" : "locked";
   }
   const active = activeStageForStatus(status, progressPercent);
   if (stageId < active) return "done";
@@ -140,6 +152,35 @@ export function introChecklistComplete(c: IntroChecklist): boolean {
   );
 }
 
+export const SCORE_ELEMENTS = [
+  { key: "rzetelnosc", label: "Rzetelność" },
+  { key: "wiedza", label: "Wykorzystywanie wiedzy i doskonalenie zawodowe" },
+  { key: "organizacja", label: "Organizacja pracy i orientacja na cele" },
+  { key: "komunikacja", label: "Komunikacja" },
+  { key: "wspolpraca", label: "Współpraca" },
+] as const;
+
+export type ScoreKey = (typeof SCORE_ELEMENTS)[number]["key"];
+export type PartialScores = Partial<Record<ScoreKey, 3 | 5 | 7>>;
+
+export function parseScores(raw: unknown): PartialScores {
+  if (!raw || typeof raw !== "object") return {};
+  const out: PartialScores = {};
+  for (const { key } of SCORE_ELEMENTS) {
+    const v = (raw as Record<string, unknown>)[key];
+    if (v === 3 || v === 5 || v === 7) out[key] = v;
+  }
+  return out;
+}
+
+export function averageScore(scores: PartialScores): number | null {
+  const vals = SCORE_ELEMENTS.map((e) => scores[e.key]).filter(
+    (v): v is 3 | 5 | 7 => v === 3 || v === 5 || v === 7,
+  );
+  if (vals.length !== SCORE_ELEMENTS.length) return null;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
 /** Najbliższy termin zależny od etapu. */
 export function nearestDeadlineForCase(
   c: Pick<
@@ -148,44 +189,24 @@ export function nearestDeadlineForCase(
     | "intro_talk_deadline"
     | "report_due_to"
     | "assessment_window_to"
-    | "exam_required"
-    | "exam_result"
+    | "assessment_interview_at"
+    | "prep_service_end_at"
   >,
 ): string | null {
   switch (c.status) {
     case "draft":
       return c.intro_talk_deadline;
     case "intro_done":
-      if (c.exam_required && !c.exam_result) {
-        return c.report_due_to; // egzamin zwykle przed/okolo sprawozdania
-      }
-      return c.report_due_to;
     case "awaiting_report":
-      return c.report_due_to;
+      return (
+        c.assessment_interview_at ||
+        c.report_due_to ||
+        c.prep_service_end_at ||
+        null
+      );
     case "in_assessment":
     case "interview_done":
       return c.assessment_window_to;
-    default:
-      return null;
-  }
-}
-
-export function statusAfterCompletingStage(
-  stageId: StageId,
-): EvaluationStatus | null {
-  switch (stageId) {
-    case 1:
-      return "intro_done";
-    case 2:
-      return "awaiting_report";
-    case 3:
-      return "in_assessment";
-    case 4:
-      return "interview_done";
-    case 5:
-      return "completed"; // MVP: werdykt + domknięcie razem; wniosek = etap 6 done
-    case 6:
-      return "completed";
     default:
       return null;
   }

@@ -102,7 +102,6 @@ export function ProcessListPage() {
       "Etap",
       "Najbliższy termin",
       "Terminowość",
-      "Postęp %",
     ];
     const lines = filtered.map((r) => {
       const t = timelinessForDeadline(r.nearest_deadline, r.status);
@@ -116,7 +115,6 @@ export function ProcessListPage() {
         STATUS_LABELS[r.status],
         r.nearest_deadline || "",
         timelinessLabel(t),
-        String(r.progress_percent ?? 0),
       ]
         .map((c) => `"${String(c).replaceAll('"', '""')}"`)
         .join(";");
@@ -145,7 +143,7 @@ export function ProcessListPage() {
   }
 
   return (
-    <AppShell title="Moi pracownicy (lista procesów)">
+    <AppShell title="Procesy">
       <div className="toolbar">
         <div className="filters">
           <input
@@ -228,14 +226,13 @@ export function ProcessListPage() {
               <th>Etap</th>
               <th>Najbliższy termin</th>
               <th>Terminowość</th>
-              <th>Postęp</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={8} className="empty-cell">
+                <td colSpan={7} className="empty-cell">
                   Brak procesów. Kliknij „+ Dodaj pracownika”, aby utworzyć
                   pierwszą sprawę.
                 </td>
@@ -261,15 +258,6 @@ export function ProcessListPage() {
                       <span className={`dot dot-${t}`}>
                         {timelinessLabel(t)}
                       </span>
-                    </td>
-                    <td>
-                      <div className="progress">
-                        <div
-                          className="progress-bar"
-                          style={{ width: `${r.progress_percent ?? 0}%` }}
-                        />
-                        <span>{r.progress_percent ?? 0}%</span>
-                      </div>
                     </td>
                     <td>
                       <Link className="btn btn-small" to={`/procesy/${r.id}`}>

@@ -10,8 +10,8 @@ export function HomePage() {
         <p className="eyebrow">Hackathon · Ministerstwo Cyfryzacji</p>
         <h1>Kompas Kompetencji</h1>
         <p className="lead">
-          Panel przełożonego: lista procesów ocen, kreator nowego pracownika i
-          prowadzenie pierwszej oceny krok po kroku.
+          Panel przełożonego: lista procesów, kreator pracownika i prowadzenie
+          pierwszej oceny krok po kroku.
         </p>
         <div className="actions">
           {user ? (
@@ -29,15 +29,15 @@ export function HomePage() {
       <section className="cards">
         <article className="card card-blue">
           <h2>Lista procesów</h2>
-          <p>Pracownik, etap, terminy, status terminowości, postęp.</p>
+          <p>Pracownik, etap, termin i status terminowości w jednym miejscu.</p>
         </article>
-        <article className="card card-purple">
+        <article className="card card-blue">
           <h2>Kreator</h2>
-          <p>Dane → kwalifikacja → służba → role → terminy → utwórz.</p>
+          <p>Dane → kwalifikacja → służba → role → utwórz proces.</p>
         </article>
-        <article className="card card-green">
+        <article className="card card-blue">
           <h2>Tylko przełożeni</h2>
-          <p>Pracownik jest obiektem w procesie, bez konta.</p>
+          <p>Pracownik jest obiektem w procesie — bez osobnego konta.</p>
         </article>
       </section>
     </div>

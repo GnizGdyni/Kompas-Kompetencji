@@ -1,6 +1,6 @@
-import { Link } from "react-router-dom";
+import { Link, NavLink } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
-import { ROLE_COLORS, ROLE_LABELS, isStaffRole } from "../types";
+import { ROLE_LABELS, isStaffRole } from "../types";
 
 export function AppShell({
   title,
@@ -11,33 +11,52 @@ export function AppShell({
 }) {
   const { profile, user, signOut } = useAuth();
   const role = profile?.role;
-  const roleColor =
-    role && isStaffRole(role) ? ROLE_COLORS[role] : "#64748b";
+  const displayName = profile?.full_name || user?.email || "Użytkownik";
+  const email = profile?.email || user?.email || "";
+  const org = profile?.org_unit;
 
   return (
-    <div className="page wide">
+    <div className="app-layout">
       <header className="topbar">
-        <div>
-          <Link to="/dashboard" className="brand">
-            Kompas Kompetencji
-          </Link>
-          {title ? <h1 className="topbar-title">{title}</h1> : null}
-        </div>
-        <div className="topbar-right">
-          <div className="topbar-user">
-            <strong>{profile?.full_name || user?.email}</strong>
-            {role && isStaffRole(role) ? (
-              <span className="role-badge" style={{ background: roleColor }}>
-                {ROLE_LABELS[role]}
-              </span>
-            ) : null}
+        <div className="topbar-inner">
+          <div className="topbar-left">
+            <Link to="/dashboard" className="brand">
+              Kompas Kompetencji
+            </Link>
+            <nav className="topbar-nav">
+              <NavLink to="/dashboard" end>
+                Procesy
+              </NavLink>
+              <NavLink to="/procesy/nowy">Nowy proces</NavLink>
+            </nav>
           </div>
-          <button className="btn btn-danger" type="button" onClick={() => signOut()}>
-            Wyloguj
-          </button>
+
+          <div className="topbar-right">
+            <div className="topbar-user">
+              <div className="topbar-user-text">
+                <strong>{displayName}</strong>
+                <span className="topbar-user-meta">
+                  {role && isStaffRole(role) ? ROLE_LABELS[role] : "Konto"}
+                  {org ? ` · ${org}` : ""}
+                  {email && email !== displayName ? ` · ${email}` : ""}
+                </span>
+              </div>
+            </div>
+            <button
+              className="btn btn-ghost btn-small"
+              type="button"
+              onClick={() => signOut()}
+            >
+              Wyloguj
+            </button>
+          </div>
         </div>
       </header>
-      {children}
+
+      <main className="page-main">
+        {title ? <h1 className="page-title">{title}</h1> : null}
+        {children}
+      </main>
     </div>
   );
 }
