@@ -2038,7 +2038,8 @@ export function ProcessDetailPage() {
                                 row.employee.job_title ||
                                 row.employee_job_title ||
                                 "stanowisko",
-                              reportNotes: reportNotes || row.report_notes,
+                              reportNotes:
+                                reportNotes || row.report_notes || null,
                               reportFileName: row.report_file_name || null,
                               interviewNotes: interviewNotes || null,
                               notes: freshNotes.map((n) => ({

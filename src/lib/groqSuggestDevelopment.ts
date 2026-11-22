@@ -200,24 +200,22 @@ export async function suggestDevelopmentActions(input: {
 
     const weakByCode = new Map(weak.map((w) => [w.code, w]));
 
-    const actions: DevelopmentAction[] = (parsed.actions || [])
-      .map((raw) => {
-        const action = (raw.action || "").trim();
-        if (!action) return null;
-        const code = (raw.competencyCode || "").trim();
-        const fromWeak = code ? weakByCode.get(code) : undefined;
-        return {
-          kind: "obszar" as const,
-          competencyCode: fromWeak?.code || code || undefined,
-          competencyName:
-            fromWeak?.name ||
-            (raw.competencyName || "").trim() ||
-            undefined,
-          action: action.length > 350 ? `${action.slice(0, 347)}…` : action,
-        } satisfies DevelopmentAction;
-      })
-      .filter((a): a is DevelopmentAction => a != null)
-      .slice(0, 3);
+    const actions: DevelopmentAction[] = [];
+    for (const raw of parsed.actions || []) {
+      const action = (raw.action || "").trim();
+      if (!action) continue;
+      const code = (raw.competencyCode || "").trim();
+      const fromWeak = code ? weakByCode.get(code) : undefined;
+      const name =
+        fromWeak?.name || (raw.competencyName || "").trim() || undefined;
+      actions.push({
+        kind: "obszar",
+        competencyCode: fromWeak?.code || code || undefined,
+        competencyName: name,
+        action: action.length > 350 ? `${action.slice(0, 347)}…` : action,
+      });
+      if (actions.length >= 3) break;
+    }
 
     if (!actions.length) {
       return {
