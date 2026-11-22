@@ -1,5 +1,6 @@
 /** Sugestia AI: plusy/minusy vs pełny model kompetencji + wskaźniki (małe pytania). */
 
+import { groqHeaders } from "./groqClient";
 import { parseModelJson } from "./parseModelJson";
 
 const GROQ_URL = "/api/groq/chat/completions";
@@ -211,7 +212,7 @@ export async function suggestEvidenceFromFacts(input: {
 
   let res = await fetch(GROQ_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await groqHeaders(),
     body: JSON.stringify({
       ...payloadBase,
       response_format: { type: "json_object" },
@@ -223,7 +224,7 @@ export async function suggestEvidenceFromFacts(input: {
     if (res.status === 400) {
       res = await fetch(GROQ_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: await groqHeaders(),
         body: JSON.stringify(payloadBase),
       });
       if (!res.ok) {

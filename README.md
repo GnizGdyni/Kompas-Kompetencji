@@ -43,17 +43,13 @@ cp .env.example .env      # uzupełnij klucze Supabase i GROQ_API_KEY
 npm run dev               # http://localhost:5173
 ```
 
-Baza: w Supabase → SQL Editor uruchom migracje w kolejności z sekcji [Migracje](#4-baza-danych).
+Baza: w Supabase → SQL Editor uruchom po kolei pliki `supabase/setup/01–04` (opis w sekcji [Migracje](#migracje)).
 
 Konta demo (tylko środowisko testowe): przełożony `marek@example.com`, HR `hr@example.com`.
 
-## Najważniejsze do poprawy przed produkcją
+## Bezpieczeństwo
 
-1. Użytkownik może sam nadać sobie rolę HR (polityka RLS na `profiles` i trigger rejestracji) — **krytyczne**.
-2. Proxy `/api/groq` jest otwarte dla każdego — ktoś może zużywać klucz Groq.
-3. Pliki sprawozdań w Storage są widoczne dla każdego zalogowanego.
-
-Szczegóły i proponowane poprawki: [Wyniki rewizji kodu](#10-wyniki-rewizji-kodu).
+Dostęp do danych pilnuje baza (RLS): przełożony widzi tylko swoich pracowników, sprawy i pliki sprawozdań, HR widzi wszystko. Rolę konta może zmienić tylko HR. Proxy `/api/groq` przyjmuje wyłącznie zalogowanych użytkowników i ma limity rozmiaru zapytania i odpowiedzi. Przed produkcją: wyłączyć publiczną rejestrację w Supabase i zmienić hasła kont demo.
 
 ---
 
@@ -70,7 +66,7 @@ Szczegóły i proponowane poprawki: [Wyniki rewizji kodu](#10-wyniki-rewizji-kod
 7. [Powiadomienia](#7-powiadomienia)
 8. [Generowanie PDF](#8-generowanie-pdf)
 9. [Konfiguracja, uruchomienie, wdrożenie](#9-konfiguracja-uruchomienie-wdrożenie)
-10. [Wyniki rewizji kodu](#10-wyniki-rewizji-kodu)
+10. [Mocne strony](#10-mocne-strony)
 
 ---
 
@@ -143,7 +139,7 @@ flowchart TB
 1. Logowanie: `supabase.auth.signInWithPassword` → JWT w przeglądarce → `AuthContext` pobiera wiersz z `profiles`.
 2. Odczyt i zapis: komponenty wołają Supabase bezpośrednio (`supabase.from(...)`). Kontrola dostępu jest **wyłącznie w RLS** po stronie bazy; UI tylko ukrywa przyciski.
 3. Pliki: upload do bucketu `reports`, odczyt przez podpisany URL ważny 1 h ([`src/lib/reportFile.ts`](src/lib/reportFile.ts)).
-4. AI: przeglądarka wysyła prompt na `/api/groq/chat/completions`. Lokalnie przekierowuje to proxy Vite ([`vite.config.ts`](vite.config.ts)), na produkcji funkcja Vercel ([`api/groq/chat/completions.ts`](api/groq/chat/completions.ts)), która dokłada `GROQ_API_KEY`. Klucz nigdy nie trafia do przeglądarki.
+4. AI: przeglądarka wysyła prompt na `/api/groq/chat/completions`. Lokalnie przekierowuje to proxy Vite ([`vite.config.ts`](vite.config.ts)), na produkcji funkcja Vercel ([`api/groq/chat/completions.ts`](api/groq/chat/completions.ts)), która sprawdza token zalogowanego użytkownika (dołączany przez `groqHeaders()`) i dokłada `GROQ_API_KEY`. Klucz nigdy nie trafia do przeglądarki.
 5. PDF: generowany w całości w przeglądarce z szablonów `public/templates/arkusz{A,B,C}.pdf`.
 
 ### Routing ([`src/App.tsx`](src/App.tsx))
@@ -152,7 +148,7 @@ flowchart TB
 |---|---|---|
 | `/` | `HomePage` | przekierowanie na `/dashboard` lub `/login` |
 | `/login` | `LoginPage` | e-mail + hasło |
-| `/dashboard` | `ProcessListPage` | lista procesów, filtry, CSV, „Przypomnij” (HR) |
+| `/dashboard` | `ProcessListPage` | lista procesów, filtry, CSV, „Przypomnij” (HR), „Usuń” (własne procesy przełożonego) |
 | `/procesy/nowy` | `NewProcessWizardPage` | kreator procesu (niedostępny dla HR) |
 | `/procesy/:id` | `ProcessDetailPage` | karta procesu z 3 etapami |
 | `/prywatnosc` | `LegalInfoPage` | informacje prawne |
@@ -187,7 +183,8 @@ Kompas Kompetencji/
 │  ├─ pages/                      Strony (patrz routing)
 │  ├─ lib/                        Logika domenowa, AI, PDF, Supabase
 │  └─ index.css                   Cały arkusz stylów (bez frameworka CSS)
-├─ supabase/migrations/           SQL do uruchomienia w SQL Editor
+├─ supabase/setup/                SQL do uruchomienia w SQL Editor (01–04)
+├─ supabase/archive/              Dawne migracje (historia)
 ├─ vercel.json                    Build + rewrite SPA (z wyłączeniem /api)
 └─ vite.config.ts                 Proxy /api/groq w trybie dev
 ```
@@ -326,14 +323,14 @@ Mapowanie na etapy UI: `draft` → 1; `intro_done`, `awaiting_report` → 2; `in
 
 | Tabela | SELECT | INSERT | UPDATE | DELETE |
 |---|---|---|---|---|
-| `profiles` | własny lub HR | trigger | własny lub HR | — |
+| `profiles` | własny lub HR | trigger (rola zawsze `supervisor`) | własny lub HR; zmiana `role` / `is_unit_head` tylko przez HR (trigger) | — |
 | `employees` | `created_by` lub HR | `created_by` = ja i rola staff | `created_by` lub HR | `created_by` lub HR |
-| `evaluation_cases` | HR, `supervisor_id`, `unit_head_id` | staff, `supervisor_id` = ja (HR dowolnie) | HR lub `supervisor_id` | — |
+| `evaluation_cases` | HR, `supervisor_id`, `unit_head_id` | staff, `supervisor_id` = ja (HR dowolnie) | HR lub `supervisor_id` | `supervisor_id` = ja (przełożony / kierujący, bez HR) |
 | `employee_notes` | HR lub właściciel pracownika | autor = ja i (HR lub właściciel) | — | — |
 | `competencies*` | zalogowani | — | — | — |
 | `legal_documents` | staff | — | — | — |
 | `notifications` | odbiorca lub HR | tylko RPC | odbiorca | — |
-| `storage: reports` | każdy zalogowany | każdy zalogowany | każdy zalogowany | każdy zalogowany |
+| `storage: reports` (ścieżka `case_id/plik`) | przełożony sprawy, kierujący, HR | przełożony sprawy | przełożony sprawy | przełożony sprawy |
 
 Funkcja `public.current_role()` (security definer) zwraca rolę bieżącego użytkownika i jest używana w większości polityk.
 
@@ -347,22 +344,20 @@ Funkcja `public.current_role()` (security definer) zwraca rolę bieżącego uży
 
 ### Migracje
 
-Repo nie używa Supabase CLI do migracji — pliki uruchamia się ręcznie w SQL Editor. Pliki `0xx_*` to historia, pliki `FIX_*_now.sql` to idempotentne wersje „do wklejenia teraz”, `SEED_*` to dane demo.
+Cała baza jest opisana w czterech plikach w `supabase/setup/`. Uruchamia się je ręcznie w Supabase → SQL Editor, w tej kolejności:
 
-Kolejność dla **świeżego projektu**:
+| Plik | Co robi | Można powtarzać? |
+|---|---|---|
+| `01_schema.sql` | Typy, tabele, kolumny, indeksy, funkcje, triggery, RLS, uprawnienia, bucket `reports` z politykami | Tak — nic nie kasuje, dokłada brakujące elementy i nadpisuje polityki/funkcje |
+| `02_seed_competencies.sql` | Model kompetencji (kompetencje, wskaźniki, poziomy) | Tak — wstawia dane tylko, gdy tabela `competencies` jest pusta |
+| `03_seed_legal_knowledge.sql` | Baza wiedzy asystenta (rozporządzenia, poradniki) | Tak — upsert po `code` |
+| `04_seed_demo.sql` | Opcjonalnie: role kont demo i 4 przykładowe procesy z uwagami | Tak, ale **usuwa i odtwarza** pracowników i sprawy konta `marek@example.com` |
 
-1. `001_foundation.sql`
-2. `003_grants.sql`, `002_fix_profiles_rls.sql`
-3. `004_employees_as_objects.sql` (albo `FIX_employees_now.sql`)
-4. `005_process_list_and_wizard.sql`
-5. `006_case_board_stages.sql`, `007_merged_stages.sql`
-6. `FIX_employee_notes_now.sql` (zawiera 008 + kolumnę `subject`)
-7. `FIX_competency_model_now.sql`, potem `FIX_competency_first_eval_flag.sql`
-8. `FIX_periodic_sheets_now.sql`
-9. `FIX_report_file_now.sql` (kolumny pliku + bucket `reports`)
-10. `FIX_legal_knowledge_now.sql`
-11. `FIX_notifications_now.sql`
-12. Opcjonalnie dane demo: `SEED_test_processes_notes.sql` (wymaga konta `marek@example.com`; **usuwa i odtwarza** wszystkich pracowników i sprawy tego konta)
+Ten sam zestaw działa na pustym projekcie i na bazie zbudowanej wcześniej starymi migracjami. Starsza baza z `employee_id` wskazującym na `profiles` jest przepinana na `employees` bez kasowania danych.
+
+Konta demo (`marek@example.com`, `hr@example.com`, hasło `Test1234!`) zakłada się w Supabase → Authentication → Users przed uruchomieniem `04_seed_demo.sql`.
+
+Dawne migracje (`0xx_*`, `FIX_*`, `SEED_*`) są w `supabase/archive/migrations/` jako historia — nie trzeba ich uruchamiać.
 
 ---
 
@@ -465,6 +460,8 @@ sequenceDiagram
 | `VITE_GROQ_MODEL` | frontend | preferowany model (domyślnie `openai/gpt-oss-120b`) |
 | `GROQ_API_KEY` | **tylko serwer** | klucz Groq; proxy Vite lokalnie, funkcja Vercel na produkcji. Nie dodawać prefiksu `VITE_` |
 
+Funkcja `/api/groq` na Vercel używa też `VITE_SUPABASE_URL` i `VITE_SUPABASE_ANON_KEY` do sprawdzenia, czy żądanie pochodzi od zalogowanego użytkownika — bez nich AI na produkcji zwraca 401. Lokalne proxy Vite tokenu nie sprawdza.
+
 ### Skrypty
 
 | Komenda | Działanie |
@@ -486,36 +483,7 @@ sequenceDiagram
 
 ---
 
-## 10. Wyniki rewizji kodu
-
-Przegląd objął cały kod `src/`, funkcję `api/`, konfigurację i migracje SQL. TypeScript kompiluje się bez błędów; oxlint zgłasza 13 ostrzeżeń (bez błędów).
-
-### Bezpieczeństwo
-
-| # | Waga | Problem | Gdzie | Proponowana poprawka |
-|---|---|---|---|---|
-| S1 | **Krytyczna** | Polityka `profiles_update_own` pozwala zmienić dowolną kolumnę własnego profilu, w tym `role`. Każdy zalogowany może zrobić `update profiles set role='hr'` i zobaczyć wszystkie dane | `001_foundation.sql` | Trigger `before update` blokujący zmianę `role` przez nie-HR albo `revoke update(role)` + osobna funkcja HR |
-| S2 | **Krytyczna** | Trigger `handle_new_user` bierze rolę z `raw_user_meta_data` podanego przy rejestracji. Przy włączonym signup każdy może założyć konto HR | `004_employees_as_objects.sql` | Zawsze `'supervisor'` (albo brak roli do akceptacji HR); wyłączyć publiczny signup |
-| S3 | Wysoka | `/api/groq` nie sprawdza, kto wysyła żądanie, i ma `Access-Control-Allow-Origin: *`. Każdy może zużywać klucz Groq | `api/groq/chat/completions.ts` | Weryfikować JWT Supabase z nagłówka `Authorization`, ograniczyć CORS do domeny aplikacji, limit rozmiaru i `max_completion_tokens` |
-| S4 | Wysoka | Bucket `reports`: każdy zalogowany może czytać, nadpisywać i usuwać wszystkie sprawozdania | `FIX_report_file_now.sql` | Polityki oparte o ścieżkę `case_id/...` i właściciela sprawy (lub HR) |
-| S5 | Średnia | Brak polityk DELETE na `employee_notes` i `evaluation_cases` (nie da się usuwać przez API) oraz brak UPDATE na uwagach | migracje 001, 008 | Dodać celowe polityki albo świadomie udokumentować brak |
-| S6 | Niska | `grant select on employees to anon` — RLS i tak blokuje, ale grant jest zbędny | `004` | Usunąć grant |
-| S7 | Niska | Demo-konta ze wspólnym słabym hasłem w bazie | Supabase Auth | Usunąć lub zmienić przed produkcją |
-
-### Jakość i utrzymanie
-
-| # | Problem | Wpływ | Rekomendacja |
-|---|---|---|---|
-| Q1 | `ProcessDetailPage.tsx` ma ~3000 linii (117 KB) i kilkadziesiąt `useState` | Trudne zmiany, ryzyko regresji | Podział na komponenty etapów (`Stage1First`, `Stage1Periodic`, `Stage2`, `Stage3Sheet`, `VerdictPanel`) i hook `useCaseForm` |
-| Q2 | Uprawnienia w UI rozproszone (`hrMode`, `act(n)`) | Łatwo pominąć blokadę | Jeden hook `usePermissions(case)` |
-| Q3 | Migracje ręczne, zdublowane (`0xx` i `FIX_*` z tą samą treścią) | Niepewny stan bazy | Supabase CLI (`supabase db push`) z jedną liniową historią |
-| Q4 | Brak testów | Reguły (terminy, werdykt, średnie) bez zabezpieczenia | Vitest dla `src/lib/*` — czyste funkcje, łatwe do pokrycia |
-| Q5 | Logika werdyktu i terminów tylko po stronie klienta | Możliwy zapis niespójnych danych przez API | Walidacja w bazie (constraint / funkcja `complete_case`) |
-| Q6 | 13 ostrzeżeń oxlint (`set-state-in-effect`, `exhaustive-deps`, `Date` w renderze) | Drobne ryzyko nadmiarowych renderów | Poprawić przy refaktorze Q1 |
-| Q7 | `index.css` ~2500 linii z kilkoma `!important` | Konflikty stylów (np. kolor przycisków) | Podział na pliki per komponent lub CSS Modules |
-| Q8 | Typy tabel pisane ręcznie w `types.ts` | Rozjazd ze schematem | `supabase gen types typescript` |
-
-### Mocne strony
+## 10. Mocne strony
 
 - Klucz Groq tylko po stronie serwera; fallback modeli i twarde limity tokenów.
 - Kontrola dostępu do danych oparta o RLS, a nie tylko o UI.

@@ -11,6 +11,7 @@ import {
   formatOrgUnitShort,
 } from "../lib/formatOrgUnit";
 import { hrSendCaseReminder } from "../lib/notifications";
+import { removeReportFile } from "../lib/reportFile";
 import { supabase } from "../lib/supabase";
 import {
   EVAL_TYPE_LABELS,
@@ -46,6 +47,7 @@ export function ProcessListPage() {
   const [deadlineTo, setDeadlineTo] = useState("");
   const [remindBusyId, setRemindBusyId] = useState<string | null>(null);
   const [remindMsg, setRemindMsg] = useState<string | null>(null);
+  const [deleteBusyId, setDeleteBusyId] = useState<string | null>(null);
 
   async function load() {
     const { data, error: err } = await supabase
@@ -116,6 +118,41 @@ export function ProcessListPage() {
       );
     } finally {
       setRemindBusyId(null);
+    }
+  }
+
+  async function deleteProcess(r: ProcessRow, name: string) {
+    const ok = window.confirm(
+      `Usunąć proces oceny: ${name}?\n\nTej operacji nie można cofnąć. Uwagi o pracowniku zostaną zachowane.`,
+    );
+    if (!ok) return;
+
+    setDeleteBusyId(r.id);
+    setRemindMsg(null);
+    try {
+      // Plik przed sprawą: polityka Storage sprawdza właściciela istniejącej sprawy
+      if (r.report_file_path) {
+        await removeReportFile(r.report_file_path).catch(() => undefined);
+      }
+      const { data, error: err } = await supabase
+        .from("evaluation_cases")
+        .delete()
+        .eq("id", r.id)
+        .select("id");
+      if (err) throw new Error(err.message);
+      if (!data || data.length === 0) {
+        throw new Error(
+          "Baza nie pozwoliła usunąć procesu. Uruchom supabase/setup/01_schema.sql w Supabase.",
+        );
+      }
+      setRows((prev) => prev.filter((x) => x.id !== r.id));
+      setRemindMsg(`Usunięto proces: ${name}.`);
+    } catch (e) {
+      setRemindMsg(
+        e instanceof Error ? e.message : "Nie udało się usunąć procesu",
+      );
+    } finally {
+      setDeleteBusyId(null);
     }
   }
 
@@ -380,6 +417,16 @@ export function ProcessListPage() {
                             onClick={() => void remindSupervisor(r.id)}
                           >
                             {remindBusyId === r.id ? "…" : "Przypomnij"}
+                          </button>
+                        ) : null}
+                        {canEval && r.supervisor_id === user.id ? (
+                          <button
+                            type="button"
+                            className="btn btn-danger-soft btn-small"
+                            disabled={deleteBusyId === r.id}
+                            onClick={() => void deleteProcess(r, name)}
+                          >
+                            {deleteBusyId === r.id ? "Usuwanie…" : "Usuń"}
                           </button>
                         ) : null}
                       </div>

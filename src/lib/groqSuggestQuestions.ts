@@ -1,3 +1,4 @@
+import { groqHeaders } from "./groqClient";
 import {
   findOspPresetByJobAndUnit,
   type OspPreset,
@@ -167,7 +168,7 @@ export async function suggestIntroQuestions(input: {
   try {
     const res = await fetch(GROQ_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: await groqHeaders(),
       body: JSON.stringify({
         model,
         temperature: 0.25,

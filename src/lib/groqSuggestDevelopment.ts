@@ -1,5 +1,6 @@
 /** Sugestia AI: ogólne wnioski — nad czym warto popracować. */
 
+import { groqHeaders } from "./groqClient";
 import { parseModelJson } from "./parseModelJson";
 
 const GROQ_URL = "/api/groq/chat/completions";
@@ -153,7 +154,7 @@ export async function suggestDevelopmentActions(input: {
   try {
     let res = await fetch(GROQ_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: await groqHeaders(),
       body: JSON.stringify({
         ...payloadBase,
         response_format: { type: "json_object" },
@@ -165,7 +166,7 @@ export async function suggestDevelopmentActions(input: {
       if (res.status === 400) {
         res = await fetch(GROQ_URL, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: await groqHeaders(),
           body: JSON.stringify(payloadBase),
         });
         if (!res.ok) {

@@ -850,10 +850,24 @@ code {
 
 .row-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 0.35rem;
-  align-items: center;
-  justify-content: flex-end;
+  align-items: stretch;
+  min-width: 7.5rem;
+}
+
+.btn.btn-small.btn-danger-soft,
+.row-actions .btn.btn-small.btn-danger-soft {
+  background: #c2554d !important;
+  border-color: #a8463f !important;
+  color: #fff !important;
+}
+
+.btn.btn-small.btn-danger-soft:hover:not(:disabled),
+.row-actions .btn.btn-small.btn-danger-soft:hover:not(:disabled) {
+  background: #a8463f !important;
+  border-color: #8f3a34 !important;
+  color: #fff !important;
 }
 
 .alert-warn {
@@ -1025,7 +1039,7 @@ select.toolbar-control {
 
 .data-table th {
   background: var(--blue-soft);
-  font-size: var(--fs-caption);
+  font-size: 0.9375rem;
   font-weight: 700;
   letter-spacing: 0;
   color: var(--blue-dark);

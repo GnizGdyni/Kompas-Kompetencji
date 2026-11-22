@@ -1,6 +1,18 @@
 /** Wspólny klient Groq: łańcuch modeli z fallbackiem. */
 
+import { supabase } from "./supabase";
+
 export const GROQ_URL = "/api/groq/chat/completions";
+
+/** Proxy /api/groq na Vercel wymaga tokenu zalogowanego użytkownika. */
+export async function groqHeaders(): Promise<Record<string, string>> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
 
 /** Preferowany: 120b → fallback 20b */
 export const GROQ_MODELS_CHAIN = [
@@ -54,7 +66,7 @@ export async function groqChatCompletion(input: {
     try {
       const res = await fetch(GROQ_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: await groqHeaders(),
         body: JSON.stringify(payload),
       });
 

@@ -884,7 +884,7 @@ export function ProcessDetailPage() {
   async function finishCase() {
     if (competencies.length === 0) {
       promptRequired(
-        "Brak modelu kompetencji w bazie — odpal FIX_competency_model_now.sql.",
+        "Brak modelu kompetencji w bazie — odpal supabase/setup/02_seed_competencies.sql.",
         "sheet",
       );
       return;
@@ -2238,7 +2238,7 @@ export function ProcessDetailPage() {
                   {competencies.length === 0 ? (
                     <div className="alert alert-warn">
                       Brak modelu w bazie. Odpal w Supabase:{" "}
-                      <code>FIX_competency_model_now.sql</code>
+                      <code>supabase/setup/02_seed_competencies.sql</code>
                     </div>
                   ) : (
                     <p className="sheet-progress">
