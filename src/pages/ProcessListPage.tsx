@@ -10,6 +10,7 @@ import {
   capitalizeFirst,
   formatOrgUnitShort,
 } from "../lib/formatOrgUnit";
+import { hrSendCaseReminder } from "../lib/notifications";
 import { supabase } from "../lib/supabase";
 import {
   EVAL_TYPE_LABELS,
@@ -43,6 +44,8 @@ export function ProcessListPage() {
   );
   const [year, setYear] = useState<string>("");
   const [deadlineTo, setDeadlineTo] = useState("");
+  const [remindBusyId, setRemindBusyId] = useState<string | null>(null);
+  const [remindMsg, setRemindMsg] = useState<string | null>(null);
 
   async function load() {
     const { data, error: err } = await supabase
@@ -100,6 +103,21 @@ export function ProcessListPage() {
       return true;
     });
   }, [rows, q, stage, year, deadlineTo, timeliness]);
+
+  async function remindSupervisor(caseId: string) {
+    setRemindBusyId(caseId);
+    setRemindMsg(null);
+    try {
+      await hrSendCaseReminder(caseId);
+      setRemindMsg("Przypomnienie wysłane do przełożonego (dzwonek).");
+    } catch (e) {
+      setRemindMsg(
+        e instanceof Error ? e.message : "Nie udało się wysłać przypomnienia",
+      );
+    } finally {
+      setRemindBusyId(null);
+    }
+  }
 
   function exportCsv() {
     const escapeCell = (value: string | number | null | undefined) => {
@@ -174,8 +192,14 @@ export function ProcessListPage() {
           <strong>Widok HR</strong>
           <span>
             Podgląd wszystkich procesów. Prowadzenie oceny (arkusz, rozmowy,
-            werdykt) jest zablokowane — robi to przełożony.
+            werdykt) jest zablokowane — robi to przełożony. Przycisk
+            „Przypomnij” wysyła powiadomienie na dzwonek przełożonego.
           </span>
+        </div>
+      ) : null}
+      {remindMsg ? (
+        <div className="alert alert-info" role="status">
+          {remindMsg}
         </div>
       ) : null}
       <div className="toolbar">
@@ -251,7 +275,7 @@ export function ProcessListPage() {
         </div>
         <div className="toolbar-actions">
           <button
-            className="btn btn-ghost toolbar-control"
+            className="btn btn-pdf-glow toolbar-control btn-export"
             type="button"
             onClick={exportCsv}
           >
@@ -342,9 +366,23 @@ export function ProcessListPage() {
                       </span>
                     </td>
                     <td>
-                      <Link className="btn btn-small" to={`/procesy/${r.id}`}>
-                        Otwórz proces
-                      </Link>
+                      <div className="row-actions">
+                        <Link className="btn btn-small" to={`/procesy/${r.id}`}>
+                          Otwórz proces
+                        </Link>
+                        {hrMode &&
+                        r.status !== "completed" &&
+                        r.status !== "cancelled" ? (
+                          <button
+                            type="button"
+                            className="btn btn-success btn-small"
+                            disabled={remindBusyId === r.id}
+                            onClick={() => void remindSupervisor(r.id)}
+                          >
+                            {remindBusyId === r.id ? "…" : "Przypomnij"}
+                          </button>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 );

@@ -45,6 +45,7 @@ import {
   formatOrgUnitShort,
 } from "../lib/formatOrgUnit";
 import { findOspPresetByJobAndUnit } from "../lib/ospPositions";
+import { hrSendCaseReminder } from "../lib/notifications";
 import {
   formatFileSize,
   removeReportFile,
@@ -116,6 +117,8 @@ export function ProcessDetailPage() {
   const [reportOnTime, setReportOnTime] = useState(true);
   const [reportNotes, setReportNotes] = useState("");
   const [reportUploading, setReportUploading] = useState(false);
+  const [remindBusy, setRemindBusy] = useState(false);
+  const [remindMsg, setRemindMsg] = useState<string | null>(null);
   const [aiSuggest, setAiSuggest] = useState<CriteriaSuggestion | null>(null);
   const [aiSuggestLoading, setAiSuggestLoading] = useState(false);
   const [aiSuggestError, setAiSuggestError] = useState<string | null>(null);
@@ -987,6 +990,22 @@ export function ProcessDetailPage() {
     </div>
   );
 
+  async function remindSupervisor() {
+    if (!row) return;
+    setRemindBusy(true);
+    setRemindMsg(null);
+    try {
+      await hrSendCaseReminder(row.id);
+      setRemindMsg("Przypomnienie wysłane na dzwonek przełożonego.");
+    } catch (e) {
+      setRemindMsg(
+        e instanceof Error ? e.message : "Nie udało się wysłać przypomnienia",
+      );
+    } finally {
+      setRemindBusy(false);
+    }
+  }
+
   return (
     <AppShell>
       {hrMode ? (
@@ -996,6 +1015,23 @@ export function ProcessDetailPage() {
             Pełny podgląd procesu. Prowadzenie oceny (rozmowy, arkusz, werdykt,
             uwagi) jest zablokowane.
           </span>
+          {row &&
+          row.status !== "completed" &&
+          row.status !== "cancelled" ? (
+            <button
+              type="button"
+              className="btn btn-success btn-small"
+              disabled={remindBusy}
+              onClick={() => void remindSupervisor()}
+            >
+              {remindBusy ? "Wysyłanie…" : "Przypomnij przełożonego"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {remindMsg ? (
+        <div className="alert alert-info" role="status">
+          {remindMsg}
         </div>
       ) : null}
       {fieldToast ? (
@@ -1284,9 +1320,23 @@ export function ProcessDetailPage() {
                       viewStage === s.id ? "selected" : ""
                     }`}
                     onClick={() => setSelectedStage(s.id)}
+                    aria-current={viewStage === s.id ? "step" : undefined}
                   >
-                    <span className="stage-num">{s.id}</span>
-                    <span className="stage-short">{s.short}</span>
+                    <span className="stage-num">
+                      {state === "done" ? "✓" : s.id}
+                    </span>
+                    <span className="stage-text">
+                      <span className="stage-eyebrow">
+                        Etap {s.id} ·{" "}
+                        {state === "done"
+                          ? "zakończony"
+                          : state === "active"
+                            ? "w toku"
+                            : "zablokowany"}
+                      </span>
+                      <span className="stage-short">{s.title}</span>
+                      <span className="stage-hint">{s.hint}</span>
+                    </span>
                   </button>
                 </li>
               );

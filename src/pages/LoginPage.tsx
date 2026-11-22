@@ -2,11 +2,16 @@ import { useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 
+const DEMO_ACCOUNTS = [
+  { label: "Przełożony", email: "marek@example.com", password: "Test1234!" },
+  { label: "HR", email: "hr@example.com", password: "Test1234!" },
+] as const;
+
 export function LoginPage() {
   const { user, signIn, loading } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [email, setEmail] = useState<string>(DEMO_ACCOUNTS[0].email);
+  const [password, setPassword] = useState<string>(DEMO_ACCOUNTS[0].password);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -72,6 +77,26 @@ export function LoginPage() {
             {busy ? "Logowanie…" : "Zaloguj się"}
           </button>
         </form>
+
+        <div className="login-demo">
+          <p className="login-demo-title">Konta demo</p>
+          {DEMO_ACCOUNTS.map((a) => (
+            <button
+              key={a.email}
+              type="button"
+              className="login-demo-row"
+              onClick={() => {
+                setEmail(a.email);
+                setPassword(a.password);
+                setError(null);
+              }}
+              title="Kliknij, aby wpisać dane"
+            >
+              <strong>{a.label}:</strong> <code>{a.email}</code> /{" "}
+              <code>{a.password}</code>
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );

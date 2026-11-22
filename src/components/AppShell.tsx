@@ -3,6 +3,7 @@ import { useAuth } from "../auth/AuthContext";
 import { formatOrgUnitShort } from "../lib/formatOrgUnit";
 import { ROLE_LABELS, isHrRole, isStaffRole } from "../types";
 import { AssistantChatbot } from "./AssistantChatbot";
+import { NotificationBell } from "./NotificationBell";
 import { SiteFooter } from "./SiteFooter";
 
 function initialsFromName(name: string): string {
@@ -57,6 +58,7 @@ export function AppShell({
           </div>
 
           <div className="topbar-right">
+            <NotificationBell />
             <div className="user-chip" title={tip || undefined}>
               <div className="user-chip-body">
                 <div className="user-chip-line">

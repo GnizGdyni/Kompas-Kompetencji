@@ -8,6 +8,8 @@ export type StageDef = {
   id: StageId;
   title: string;
   short: string;
+  /** Jedno zdanie na kafelku etapu — co się tu robi. */
+  hint: string;
   description: string;
 };
 
@@ -16,6 +18,7 @@ export const STAGES_FIRST: StageDef[] = [
     id: 1,
     title: "Rozmowa wstępna",
     short: "Wstępna",
+    hint: "Omówienie zasad oceny, obowiązków i terminu sprawozdania",
     description:
       "Zapoznanie z procedurą, elementami oceny, oczekiwaniami i terminem sprawozdania (≤ 21 dni).",
   },
@@ -23,12 +26,14 @@ export const STAGES_FIRST: StageDef[] = [
     id: 2,
     title: "Służba przygotowawcza",
     short: "Okres",
+    hint: "Egzamin, sprawozdanie pracownika i termin rozmowy",
     description: "",
   },
   {
     id: 3,
     title: "Rozmowa i arkusz",
     short: "Rozmowa",
+    hint: "Rozmowa oceniająca, oceny 3/5/7 i werdykt",
     description: "",
   },
 ];
@@ -38,6 +43,7 @@ export const STAGES_PERIODIC: StageDef[] = [
     id: 1,
     title: "Kryteria i termin",
     short: "Kryteria",
+    hint: "Wybór arkusza B/C, kryteriów i terminu oceny",
     description:
       "Rozmowa o kryteriach (obowiązkowe + max 3 dodatkowe z OSP) i zapoznanie z terminem sporządzenia oceny (cykl 24 mies.).",
   },
@@ -45,6 +51,7 @@ export const STAGES_PERIODIC: StageDef[] = [
     id: 2,
     title: "Okres podlegający ocenie",
     short: "Okres",
+    hint: "Obserwacja pracy, uwagi i termin rozmowy",
     description:
       "Obserwacja w cyklu oceny okresowej. Ustalasz datę rozmowy oceniającej i gdy gotowe — rozpoczynasz arkusz B/C.",
   },
@@ -52,6 +59,7 @@ export const STAGES_PERIODIC: StageDef[] = [
     id: 3,
     title: "Rozmowa i arkusz B/C",
     short: "Rozmowa",
+    hint: "Rozmowa oceniająca, oceny 1–9 i werdykt",
     description: "",
   },
 ];

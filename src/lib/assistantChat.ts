@@ -7,6 +7,7 @@ import {
   SCREEN_GLOSSARY,
   buildNextSteps,
   formatOpenProcessBlock,
+  reportUploadGuide,
   type OpenProcessContext,
 } from "./processAssistantHints";
 
@@ -17,26 +18,29 @@ export type ChatMessage = {
   content: string;
 };
 
-const HISTORY_TURNS = 4;
-const HISTORY_MSG_MAX = 900;
+const HISTORY_TURNS = 3;
+const HISTORY_MSG_MAX = 500;
+const ASSISTANT_MAX_TOKENS = 420;
 
 function systemPrompt(legalBlock: string, compactGlossary: boolean): string {
   return [
-    "ROLA: Asystent przełożonego (Kompas Kompetencji / służba cywilna).",
-    "Pomagasz: przepisy, etap procesu, ekran, wskazówki do rozmowy/arkusza. Nie oceniasz za użytkownika. Nie zmyślaj faktów.",
+    "ROLA: Asystent przełożonego (Kompas Kompetencji).",
+    "Pomagasz krótko: przepisy, etap, ekran. Nie oceniasz za użytkownika. Nie zmyślaj faktów ani menu UI.",
     "",
     "BAZA WIEDZY:",
     legalBlock,
     "",
     compactGlossary
-      ? "EKRAN: B=kierowanie, C=pozostałe; 1. ocena 3/5/7; okresowa 1–9; uzasadnienie obowiązkowe przy NEGATYWNEJ; HR bez prowadzenia oceny."
+      ? "UI: Procesy→otwórz sprawę→etapy 1–3. Sprawozdanie=etap 2 sekcja Sprawozdanie (Wybierz plik+data+Zapisz). Brak menu „Oceny okresowe”/zakładki poza kartą. B=kierowanie C=inne; 1.ocena 3/5/7; okresowa 1–9; uzasadnienie przy NEGATYWNEJ; HR bez prowadzenia oceny."
       : SCREEN_GLOSSARY,
     "",
     compactGlossary
-      ? "ROZMOWA/ARKUSZ: tylko wskazówki; fakty z uwag/sprawozdania/OSP; bez werdyktu za przełożonego."
+      ? "ROZMOWA/ARKUSZ: wskazówki; fakty z uwag/sprawozdania/OSP."
       : INTERVIEW_SHEET_GUIDANCE,
     "",
-    "WYMAGANIA: cytuj z bazy lub powiedz „brak w bazie”; przy otwartym procesie trzymaj się etapu; Markdown (**bold**, listy); bez imion; decyzja = przełożony.",
+    "STYL: max 6–8 krótkich linii lub lista 3–5 punktów; bez esejów i powtórzeń; Markdown oszczędnie.",
+    "NIE wstawiaj w tytułach/nawiasach stanowiska ani komórki (np. „naczelnik… / Departament…”) — to kontekst wewnętrzny, nie treść odpowiedzi.",
+    "WYMAGANIA: cytuj bazę lub „brak w bazie”; nie wymyślaj przycisków/zakładek spoza UI; bez imion; decyzja=przełożony.",
   ].join("\n");
 }
 
@@ -95,6 +99,36 @@ export function isNextStepsQuestion(text: string): boolean {
   );
 }
 
+/** Pytania o miejsce wgrania / złożenia sprawozdania w Kompasie. */
+export function isReportWhereQuestion(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (!/sprawozd/.test(t)) return false;
+  return (
+    /gdzie|wgra|załad|zalad|dodaj|umieści|umiesci|złożyć|zlozyc|złoż|wrzu|upload|plik|sekcj|etap 2|etapie 2/.test(
+      t,
+    ) || /jak.*(złożyć|zlozyc|wgra|dodac|dodać).*sprawozd/.test(t)
+  );
+}
+
+/** Jak przeprowadzić / zacząć pierwszą ocenę — lokalnie, bez profilu w nagłówku. */
+export function isFirstEvalHowQuestion(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (!/pierwsz/.test(t)) return false;
+  return /jak|przeprowadz|rozpoczn|zaczn|krok|etap|zrobić|zrobic/.test(t);
+}
+
+export function localFirstEvalGuide(): string {
+  return [
+    "**Pierwsza ocena — kroki w Kompasie**",
+    "",
+    "1. **Procesy** → **Nowy proces** (albo otwórz istniejącą sprawę).",
+    "2. **Etap 1** — rozmowa wstępna (checklista, data, termin sprawozdania) → **Zapisz**.",
+    "3. **Etap 2** — okres; sekcja **Sprawozdanie** (plik + data) → **Zapisz**.",
+    "4. **Etap 3** — rozmowa i arkusz (3/5/7), werdykt; przy negatywnej — uzasadnienie.",
+    "5. **Zapisz** → PDF (opcjonalnie) → zakończ proces.",
+  ].join("\n");
+}
+
 export async function askAssistant(input: {
   userText: string;
   history?: ChatMessage[];
@@ -111,9 +145,15 @@ export async function askAssistant(input: {
 
   const open = input.openProcess ?? null;
 
-  // Ścieżka bez tokenów API
+  // Ścieżki bez tokenów API
   if (isNextStepsQuestion(userText)) {
     return localNextStepsReply(open);
+  }
+  if (isReportWhereQuestion(userText)) {
+    return reportUploadGuide(open);
+  }
+  if (isFirstEvalHowQuestion(userText)) {
+    return localFirstEvalGuide();
   }
 
   const { formattedPromptContext, sources } = await getLegalContextForAssistant({
@@ -126,9 +166,6 @@ export async function askAssistant(input: {
 
   const contextBlock = [
     formatOpenProcessBlock(open),
-    "",
-    "PROFIL PRZEŁOŻONEGO:",
-    `- ${input.profileContext?.jobTitle || "—"} / ${input.profileContext?.orgUnit || "—"}`,
     sources.length
       ? `Źródła: ${sources.map((s) => s.code).join(", ")}`
       : "Źródła: fallback",
@@ -155,7 +192,7 @@ export async function askAssistant(input: {
     const { text } = await groqChatCompletion({
       messages,
       temperature: 0.2,
-      maxCompletionTokens: 900,
+      maxCompletionTokens: ASSISTANT_MAX_TOKENS,
     });
     return text;
   } catch (e: unknown) {

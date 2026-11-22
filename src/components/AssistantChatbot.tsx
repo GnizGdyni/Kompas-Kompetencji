@@ -15,6 +15,23 @@ type Props = {
 const NEXT_STEPS_PROMPT =
   "Co mam teraz zrobić? Podaj 2–3 konkretne kroki na bieżącym etapie otwartego procesu (albo ogólnie, jeśli procesu nie ma).";
 
+const PANEL_MIN_W = 320;
+const PANEL_BASE_W = 380;
+const PANEL_MIN_H = 360;
+
+/** Max szerokość = 1/4 ekranu, ale nigdy mniej niż rozmiar bazowy. */
+function clampPanelSize(w: number, h: number): { w: number; h: number } {
+  const maxW = Math.min(
+    Math.max(PANEL_BASE_W, window.innerWidth * 0.25),
+    window.innerWidth - 18,
+  );
+  const maxH = window.innerHeight - 88;
+  return {
+    w: Math.round(Math.min(Math.max(w, PANEL_MIN_W), maxW)),
+    h: Math.round(Math.min(Math.max(h, PANEL_MIN_H), maxH)),
+  };
+}
+
 export function AssistantChatbot({ context }: Props) {
   const { profile } = useAuth();
   const { openProcess } = useAssistantProcess();
@@ -23,7 +40,48 @@ export function AssistantChatbot({ context }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [panelSize, setPanelSize] = useState<{ w: number; h: number } | null>(
+    null,
+  );
   const listRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  function startResize(e: React.PointerEvent<HTMLDivElement>) {
+    const panel = panelRef.current;
+    if (!panel) return;
+    e.preventDefault();
+    const rect = panel.getBoundingClientRect();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const handle = e.currentTarget;
+    handle.setPointerCapture(e.pointerId);
+
+    function onMove(ev: PointerEvent) {
+      setPanelSize(
+        clampPanelSize(
+          rect.width + (startX - ev.clientX),
+          rect.height + (startY - ev.clientY),
+        ),
+      );
+    }
+    function onUp() {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+    }
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
+  }
+
+  useEffect(() => {
+    if (!panelSize) return;
+    function onWindowResize() {
+      setPanelSize((s) => (s ? clampPanelSize(s.w, s.h) : s));
+    }
+    window.addEventListener("resize", onWindowResize);
+    return () => window.removeEventListener("resize", onWindowResize);
+  }, [panelSize]);
 
   useEffect(() => {
     if (!open) return;
@@ -74,10 +132,27 @@ export function AssistantChatbot({ context }: Props) {
     <div className={`assistant-root${open ? " is-open" : ""}`}>
       {open ? (
         <div
+          ref={panelRef}
           className="assistant-panel"
           role="dialog"
           aria-label="Asystent AI"
+          style={
+            panelSize
+              ? {
+                  width: panelSize.w,
+                  height: panelSize.h,
+                  maxHeight: "none",
+                }
+              : undefined
+          }
         >
+          <div
+            className="assistant-resize"
+            onPointerDown={startResize}
+            onDoubleClick={() => setPanelSize(null)}
+            title="Przeciągnij, aby powiększyć (dwuklik — rozmiar domyślny)"
+            aria-hidden="true"
+          />
           <div className="assistant-head">
             <div>
               <strong>Asystent AI</strong>
@@ -117,7 +192,7 @@ export function AssistantChatbot({ context }: Props) {
             {messages.length === 0 && !busy ? (
               <p className="muted assistant-empty">
                 {openProcess
-                  ? "Widzę otwarty proces (stanowisko, etap, terminy, sprawozdanie/uwagi). Zapytaj albo kliknij „Co mam teraz zrobić?”."
+                  ? "Widzę otwarty proces (etap, terminy, sprawozdanie/uwagi). Zapytaj albo kliknij „Co mam teraz zrobić?”."
                   : "Otwórz proces, żeby dostać wskazówki pod etap — albo pytaj ogólnie o przepisy i B/C."}
               </p>
             ) : null}

@@ -32,16 +32,41 @@ export type OpenProcessContext = {
 };
 
 export const SCREEN_GLOSSARY = `
-WYJAŚNIENIA EKRANU / PROCESU (Kompas):
+WYJAŚNIENIA EKRANU / PROCESU (Kompas — tylko te nazwy, NIE zmyślaj innych menu):
+- Nawigacja: topbar „Procesy” (lista) → „Otwórz proces” → karta sprawy z etapami 1–3. Brak osobnego menu „Oceny okresowe” / zakładki pracownika poza kartą procesu.
+- Sprawozdanie (pierwsza ocena): etap 2 karty procesu → sekcja „Sprawozdanie” → „Wybierz plik” (PDF/DOC/DOCX) + data złożenia + opcjonalnie „Notatka / opis” → „Zapisz”. Formalne przyjęcie = zapis z datą/plikiem i przejście dalej (brak osobnego „Zatwierdź sprawozdanie” / e-maila do pracownika w tej wersji).
 - Status procesu (DB): draft, intro_done, awaiting_report, in_assessment, interview_done, completed, cancelled.
-- Etapy UI (1–3): pierwsza ocena = Rozmowa wstępna → Służba przygotowawcza/okres → Rozmowa i arkusz; okresowa = Kryteria i termin → Okres → Rozmowa i arkusz B/C.
-- Arkusz B vs C (ocena okresowa): B — stanowiska z bezpośrednim kierowaniem pracownikami (kryteria m.in. zarządzanie ludźmi, decyzje); C — pozostałe stanowiska (m.in. wiedza, rzetelność). Obowiązkowe + max 3 dodatkowe z OSP.
-- Skala pierwsza ocena: 3 / 5 / 7. Skala okresowa: 1 / 3 / 5 / 7 / 9.
-- Uzasadnienie obowiązkowe przy werdykcie NEGATYWNYM (pierwsza i okresowa). Przy pozytywnej — opcjonalne; wnioski rozwojowe opcjonalne.
-- Okresowa pozytywna (reguła w Kompasie/rozporządzeniu): poziom ogólny „na poziomie” lub wyżej oraz brak oceny cząstkowej 1 pkt („znacznie poniżej”).
-- Terminowość (lista): zielony / żółty / czerwony względem nearest_deadline i statusu.
-- HR widzi procesy, ale nie prowadzi oceny (arkusz, werdykt, dodawanie procesu).
+- Etapy UI (1–3): pierwsza = Rozmowa wstępna → Okres/sprawozdanie → Rozmowa i arkusz; okresowa = Kryteria → Okres → Rozmowa i arkusz B/C (w okresowej nie ma osobnego wgrywania sprawozdania jak w pierwszej).
+- Arkusz B vs C: B — kierowanie ludźmi; C — pozostałe. Skala pierwsza 3/5/7; okresowa 1–9.
+- Uzasadnienie obowiązkowe przy NEGATYWNEJ. HR: podgląd + dzwonek „Przypomnij”; bez prowadzenia oceny.
 `.trim();
+
+/** Gdzie wgrać sprawozdanie — treść zgodna z UI (krótka). */
+export function reportUploadGuide(ctx?: OpenProcessContext | null): string {
+  const openHint =
+    ctx && ctx.evaluationType !== "periodic"
+      ? ctx.viewStage === 2
+        ? "Masz otwarty proces na **etapie 2** — sekcja jest na tej karcie."
+        : `Masz otwarty proces (etap ${ctx.viewStage}/3) — przejdź na **etap 2**, tam jest sekcja Sprawozdanie.`
+      : ctx?.evaluationType === "periodic"
+        ? "W **ocenie okresowej** nie ma osobnego wgrywania sprawozdania pierwszej oceny — materiał zbierasz w uwagach i na etapie arkusza."
+        : null;
+
+  const lines = [
+    "**Gdzie wgrać sprawozdanie w Kompasie**",
+    "",
+    "1. **Procesy** → otwórz sprawę (**pierwsza ocena**).",
+    "2. Etap **2 — Służba przygotowawcza**.",
+    "3. Sekcja **Sprawozdanie** → **Wybierz plik** (PDF/DOC/DOCX).",
+    "4. **Data złożenia** (+ opcjonalnie opis) → **Zapisz**.",
+    "",
+    "_Brak menu „Oceny okresowe” i osobnego „Zatwierdź sprawozdanie” — wystarczy zapis na karcie procesu._",
+  ];
+  if (openHint) {
+    lines.push("", openHint);
+  }
+  return lines.join("\n");
+}
 
 export function buildNextSteps(ctx: OpenProcessContext): string[] {
   const periodic = ctx.evaluationType === "periodic";
@@ -147,8 +172,10 @@ export function formatOpenProcessBlock(ctx: OpenProcessContext | null): string {
       : null,
     `- Status: ${statusLabel} (${ctx.status})`,
     `- Etap UI: ${ctx.viewStage}/3 — ${stageTitle} (aktywny procesowo: ${ctx.activeStage})`,
-    `- Stanowisko ocenianego: ${ctx.employeeJobTitle || "—"}`,
-    `- Komórka ocenianego: ${ctx.employeeOrgUnit || "—"}`,
+    // Stanowisko/komórka tylko do dopasowania B/C/OSP — nie cytować w odpowiedzi
+    ctx.employeeJobTitle
+      ? `- (wewn.) typ stanowiska ocenianego: ${ctx.employeeJobTitle} — NIE powtarzaj w odpowiedzi`
+      : null,
     `- Najbliższy termin: ${ctx.nearestDeadline || "—"}`,
     ctx.evaluationType === "periodic"
       ? `- Rozmowa o kryteriach: ${ctx.criteriaTalkAt || "brak"}; termin cyklu: ${ctx.cycleDueAt || "—"}`
