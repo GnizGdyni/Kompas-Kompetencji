@@ -2,6 +2,8 @@
 
 Aplikacja webowa wspierająca przełożonych w służbie cywilnej przy **pierwszej ocenie** i **ocenie okresowej** pracownika (Ministerstwo Cyfryzacji, HackNation). Prowadzi przez cały proces krok po kroku, pilnuje terminów, generuje wypełniony arkusz PDF i podpowiada z pomocą AI na podstawie faktów (uwagi, sprawozdanie, opis stanowiska).
 
+**Przykładowe sprawozdanie pracownika do pobrania:** [`przyklady/sprawozdanie_przyklad.pdf`](przyklady/sprawozdanie_przyklad.pdf) — można je wgrać w procesie (etap 2 → sekcja „Sprawozdanie”).
+
 ---
 
 # Część 1 — w skrócie
