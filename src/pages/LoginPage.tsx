@@ -5,8 +5,8 @@ import { useAuth } from "../auth/AuthContext";
 export function LoginPage() {
   const { user, signIn, loading } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState("marek@example.com");
-  const [password, setPassword] = useState("Test1234!");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -72,12 +72,6 @@ export function LoginPage() {
             {busy ? "Logowanie…" : "Zaloguj się"}
           </button>
         </form>
-
-        <p className="hint">
-          Demo przełożony: <code>marek@example.com</code> / <code>Test1234!</code>
-          <br />
-          Demo HR: <code>hr@example.com</code> / <code>Test1234!</code>
-        </p>
       </div>
     </div>
   );

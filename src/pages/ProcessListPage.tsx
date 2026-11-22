@@ -278,7 +278,8 @@ export function ProcessListPage() {
         <div className="alert alert-error">
           {error}
           <div style={{ marginTop: 8 }}>
-            Upewnij się, że odpaliłeś migracje SQL (004 i 005).
+            Jeśli problem się powtarza, skontaktuj się z administratorem
+            systemu.
           </div>
         </div>
       ) : null}
