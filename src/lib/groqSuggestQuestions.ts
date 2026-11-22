@@ -52,7 +52,7 @@ export function questionsFromOspText(input: {
   const taskRe =
     /Zadanie\s*\d+\s*[:.]?\s*([^\n]+(?:\n(?!Zadanie\s*\d+)[^\n]+){0,3})/gi;
   let m: RegExpExecArray | null;
-  while ((m = taskRe.exec(input.ospText)) && out.length < 5) {
+  while ((m = taskRe.exec(input.ospText)) && out.length < 3) {
     const raw = m[1].replace(/\s+/g, " ").trim();
     if (raw.length < 40) continue;
     const short = raw.length > 160 ? `${raw.slice(0, 157)}…` : raw;
@@ -68,9 +68,9 @@ export function questionsFromOspText(input: {
       .split(/[;•\-–—]/)
       .map((s) => s.trim())
       .filter((s) => s.length > 8)
-      .slice(0, 3);
+      .slice(0, 2);
     for (const soft of softParts) {
-      if (out.length >= 7) break;
+      if (out.length >= 3) break;
       out.push({
         question: `W kontekście kompetencji „${soft}” — jak wygląda to na Twoim stanowisku${
           input.jobTitle ? ` (${input.jobTitle})` : ""
@@ -96,7 +96,7 @@ export function questionsFromOspText(input: {
     });
   }
 
-  return out.slice(0, 7);
+  return out.slice(0, 3);
 }
 
 /**
@@ -139,7 +139,7 @@ export async function suggestIntroQuestions(input: {
   const system = [
     `Jesteś asystentem przełożonego w służbie cywilnej. Proponujesz pytania do: ${contextLabel}.`,
     "Pytania mają być krótkie, konkretne, oparte WYŁĄCZNIE na OSP (cel, zadania, kompetencje miękkie, wymagana wiedza).",
-    "Nie wymyślaj faktów spoza OSP. Max 6–7 pytań.",
+    "Nie wymyślaj faktów spoza OSP. Dokładnie 3 pytania (ani mniej, ani więcej jeśli da się z OSP).",
     "Każde pytanie: behawioralne lub sprawdzające zrozumienie obowiązków (nie quiz prawniczy).",
     'JSON only: {"questions":[{"question":"...","focus":"kompetencja lub temat","source":"fragment OSP"}],"sources":["..."]}',
   ].join(" ");
@@ -151,8 +151,10 @@ export async function suggestIntroQuestions(input: {
       ? `OSP: ${preset.label} | PDF: ${preset.pdf}`
       : "Brak dopasowanego pliku OSP — pytania ogólne o obowiązki stanowiska.",
     "",
+    "LIMIT: zwróć maksymalnie 3 pytania.",
+    "",
     ospCorpus
-      ? `TREŚĆ OSP:\n${ospCorpus.slice(0, 5500)}`
+      ? `TREŚĆ OSP:\n${ospCorpus.slice(0, 4000)}`
       : "Brak treści OSP.",
   ].join("\n");
 
@@ -169,7 +171,7 @@ export async function suggestIntroQuestions(input: {
       body: JSON.stringify({
         model,
         temperature: 0.25,
-        max_completion_tokens: 1600,
+        max_completion_tokens: 900,
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
@@ -211,14 +213,14 @@ export async function suggestIntroQuestions(input: {
       }
     }
     if (aiQs.length) {
-      questions = aiQs.slice(0, 7);
+      questions = aiQs.slice(0, 3);
       usedModel = model;
     }
     if (Array.isArray(parsed.sources)) {
       sources = parsed.sources
         .map((s) => String(s).trim())
         .filter(Boolean)
-        .slice(0, 10);
+        .slice(0, 5);
     }
   } catch (e) {
     if (!local.length) {
@@ -231,8 +233,8 @@ export async function suggestIntroQuestions(input: {
     sources = [
       `OSP PDF: ${preset.pdf} (${preset.symbol})`,
       ...sources.filter((s) => !s.includes(preset.pdf)),
-    ].slice(0, 12);
+    ].slice(0, 5);
   }
 
-  return { questions, sources, model: usedModel };
+  return { questions: questions.slice(0, 3), sources, model: usedModel };
 }

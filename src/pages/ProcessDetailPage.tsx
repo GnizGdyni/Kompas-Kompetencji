@@ -2109,7 +2109,7 @@ export function ProcessDetailPage() {
                               <p className="muted">Brak istotnych informacji.</p>
                             ) : (
                               <ul className="ai-suggest-list">
-                                {aiEvidence.summaryPlus.map((c) => (
+                                {aiEvidence.summaryPlus.slice(0, 3).map((c) => (
                                   <li key={`p-${c.code}`}>
                                     <strong>{c.name}</strong>
                                     <div className="evidence-hint">{c.hint}</div>
@@ -2126,7 +2126,7 @@ export function ProcessDetailPage() {
                               <p className="muted">Brak istotnych informacji.</p>
                             ) : (
                               <ul className="ai-suggest-list">
-                                {aiEvidence.summaryMinus.map((c) => (
+                                {aiEvidence.summaryMinus.slice(0, 3).map((c) => (
                                   <li key={`m-${c.code}`}>
                                     <strong>{c.name}</strong>
                                     <div className="evidence-hint">{c.hint}</div>

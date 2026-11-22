@@ -44,6 +44,14 @@ export type EvidenceInputNote = {
   noted_at: string;
 };
 
+const MAX_NOTES_IN_PROMPT = 12;
+const MAX_NOTE_BODY = 420;
+const MAX_REPORT_CHARS = 1200;
+const MAX_INTERVIEW_CHARS = 800;
+const MAX_FACTS_CHARS = 4500;
+/** Max pozycji w sekcji Plusy / Minusy na UI i w odpowiedzi. */
+export const MAX_EVIDENCE_SUMMARY = 3;
+
 function buildFactsBlock(input: {
   reportNotes: string | null;
   reportFileName: string | null;
@@ -53,14 +61,20 @@ function buildFactsBlock(input: {
   const parts: string[] = [];
   const labels: string[] = [];
 
-  if (input.notes.length > 0) {
+  // Najnowsze uwagi pierwsze (już zwykle tak z API); tnij liczbę i długość
+  const notes = input.notes.slice(0, MAX_NOTES_IN_PROMPT);
+  if (notes.length > 0) {
     parts.push(
-      `[SEKCJA: UWAGI O PRACOWNIKU — ${input.notes.length} wpis(ów); traktuj jako kluczowe fakty]`,
+      `[SEKCJA: UWAGI O PRACOWNIKU — ${notes.length}/${input.notes.length} wpis(ów); traktuj jako kluczowe fakty]`,
     );
-    input.notes.forEach((n, i) => {
+    notes.forEach((n, i) => {
       const tag = n.tone === "positive" ? "UWAGA +" : "UWAGA −";
+      const body =
+        n.body.length > MAX_NOTE_BODY
+          ? `${n.body.slice(0, MAX_NOTE_BODY)}…`
+          : n.body;
       parts.push(
-        `[${tag} #${i + 1} | data ${n.noted_at} | temat: ${n.subject || "—"}]\n${n.body}`,
+        `[${tag} #${i + 1} | data ${n.noted_at} | temat: ${n.subject || "—"}]\n${body}`,
       );
       labels.push(
         `uwaga ${n.tone === "positive" ? "+" : "−"}: ${n.subject || n.noted_at}`,
@@ -70,7 +84,11 @@ function buildFactsBlock(input: {
 
   const report = (input.reportNotes || "").trim();
   if (report) {
-    parts.push(`[SPRAWOZDANIE — opis/notatka]\n${report}`);
+    const cut =
+      report.length > MAX_REPORT_CHARS
+        ? `${report.slice(0, MAX_REPORT_CHARS)}…`
+        : report;
+    parts.push(`[SPRAWOZDANIE — opis/notatka]\n${cut}`);
     labels.push("sprawozdanie (opis)");
   }
   if (input.reportFileName) {
@@ -82,11 +100,19 @@ function buildFactsBlock(input: {
 
   const interview = (input.interviewNotes || "").trim();
   if (interview) {
-    parts.push(`[NOTATKI Z ROZMOWY]\n${interview}`);
+    const cut =
+      interview.length > MAX_INTERVIEW_CHARS
+        ? `${interview.slice(0, MAX_INTERVIEW_CHARS)}…`
+        : interview;
+    parts.push(`[NOTATKI Z ROZMOWY]\n${cut}`);
     labels.push("notatki z rozmowy");
   }
 
-  return { facts: parts.join("\n\n"), labels };
+  let facts = parts.join("\n\n");
+  if (facts.length > MAX_FACTS_CHARS) {
+    facts = `${facts.slice(0, MAX_FACTS_CHARS)}\n\n[… obcięto dalsze fakty — priorytet: najnowsze uwagi]`;
+  }
+  return { facts, labels };
 }
 
 /**
@@ -163,19 +189,20 @@ export async function suggestEvidenceFromFacts(input: {
     `Liczba wskaźników/pytań do przejścia: ${indCount}`,
     "",
     "FAKTY (jedyne źródło prawdy):",
-    facts.slice(0, 6000),
+    facts,
     "",
     "MODEL KOMPETENCJI TEJ OCENY (porównaj fakty z KAŻDĄ pozycją):",
     modelBlock,
     "",
     `Wymagane: tablica competencies z dokładnie tymi kodami: ${allCodes.join(", ")}.`,
     `Wymagane: tablica indicators z wszystkimi id wskaźników (${indCount} szt.).`,
+    `Podsumowanie plus/minus: wybierz max ${MAX_EVIDENCE_SUMMARY} najmocniejszych plusów i max ${MAX_EVIDENCE_SUMMARY} minusów (resztę i tak oznacz w competencies).`,
   ].join("\n");
 
   const payloadBase = {
     model,
     temperature: 0.05,
-    max_completion_tokens: Math.min(8000, 1800 + indCount * 120),
+    max_completion_tokens: Math.min(5000, 1200 + indCount * 80),
     messages: [
       { role: "system", content: system },
       { role: "user", content: user },
@@ -413,12 +440,12 @@ export async function suggestEvidenceFromFacts(input: {
     }
   }
 
-  const summaryPlus = Object.values(byCompetency).filter(
-    (c) => c.lean === "plus",
-  );
-  const summaryMinus = Object.values(byCompetency).filter(
-    (c) => c.lean === "minus",
-  );
+  const summaryPlus = Object.values(byCompetency)
+    .filter((c) => c.lean === "plus")
+    .slice(0, MAX_EVIDENCE_SUMMARY);
+  const summaryMinus = Object.values(byCompetency)
+    .filter((c) => c.lean === "minus")
+    .slice(0, MAX_EVIDENCE_SUMMARY);
 
   return {
     summaryPlus,
