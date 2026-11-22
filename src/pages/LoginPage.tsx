@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Link, Navigate, useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 
 export function LoginPage() {
@@ -26,14 +26,23 @@ export function LoginPage() {
   }
 
   return (
-    <div className="page narrow">
-      <div className="panel">
-        <p className="eyebrow">Logowanie</p>
-        <h1>Panel przełożonego</h1>
-        <p className="muted">
-          Aplikacja jest tylko dla przełożonych (i HR). Pracowników dodajesz
-          później jako obiekty — bez konta.
-        </p>
+    <div className="page narrow login-page">
+      <div className="panel login-panel">
+        <div className="login-brand">
+          <img
+            className="login-logo"
+            src="/logo-kompas.png"
+            alt=""
+            width={72}
+            height={72}
+          />
+          <div>
+            <p className="eyebrow" style={{ margin: 0 }}>
+              Ministerstwo Cyfryzacji
+            </p>
+            <h1 className="login-title">Kompas Kompetencji</h1>
+          </div>
+        </div>
 
         <form className="form" onSubmit={onSubmit}>
           <label>
@@ -43,6 +52,7 @@ export function LoginPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+              autoComplete="username"
             />
           </label>
           <label>
@@ -52,6 +62,7 @@ export function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
+              autoComplete="current-password"
             />
           </label>
 
@@ -63,11 +74,10 @@ export function LoginPage() {
         </form>
 
         <p className="hint">
-          Demo: <code>marek@example.com</code> / <code>Test1234!</code>
+          Demo przełożony: <code>marek@example.com</code> / <code>Test1234!</code>
+          <br />
+          Demo HR: <code>hr@example.com</code> / <code>Test1234!</code>
         </p>
-        <Link className="text-link" to="/">
-          ← Strona startowa
-        </Link>
       </div>
     </div>
   );

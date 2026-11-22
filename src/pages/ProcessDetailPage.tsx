@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { AppShell } from "../components/AppShell";
+import { useAssistantProcess } from "../auth/AssistantProcessContext";
 import { useAuth } from "../auth/AuthContext";
 import {
   eligibilityLabel,
@@ -27,6 +28,23 @@ import {
   suggestExtraCriteria,
   type CriteriaSuggestion,
 } from "../lib/groqSuggestCriteria";
+import {
+  suggestIntroQuestions,
+  type QuestionsSuggestion,
+} from "../lib/groqSuggestQuestions";
+import {
+  suggestEvidenceFromFacts,
+  type EvidenceSuggestion,
+} from "../lib/groqSuggestEvidence";
+import {
+  suggestDevelopmentActions,
+  type DevelopmentSuggestion,
+} from "../lib/groqSuggestDevelopment";
+import {
+  capitalizeFirst,
+  formatOrgUnitShort,
+} from "../lib/formatOrgUnit";
+import { findOspPresetByJobAndUnit } from "../lib/ospPositions";
 import {
   formatFileSize,
   removeReportFile,
@@ -55,7 +73,9 @@ import {
 import { supabase } from "../lib/supabase";
 import {
   EVAL_TYPE_LABELS,
-  STATUS_LABELS,
+  statusLabelForCase,
+  canRunEvaluation,
+  isHrRole,
   isStaffRole,
   type EligibilityResult,
   type Employee,
@@ -70,6 +90,7 @@ type CaseRow = EvaluationCase & { employee: Employee };
 export function ProcessDetailPage() {
   const { id } = useParams();
   const { loading, user, profile } = useAuth();
+  const { setOpenProcess } = useAssistantProcess();
   const [row, setRow] = useState<CaseRow | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -98,7 +119,24 @@ export function ProcessDetailPage() {
   const [aiSuggest, setAiSuggest] = useState<CriteriaSuggestion | null>(null);
   const [aiSuggestLoading, setAiSuggestLoading] = useState(false);
   const [aiSuggestError, setAiSuggestError] = useState<string | null>(null);
+  const [aiSourcesOpen, setAiSourcesOpen] = useState(false);
   const aiSuggestKeyRef = useRef<string | null>(null);
+  const [aiQuestions, setAiQuestions] = useState<QuestionsSuggestion | null>(
+    null,
+  );
+  const [aiQuestionsLoading, setAiQuestionsLoading] = useState(false);
+  const [aiQuestionsError, setAiQuestionsError] = useState<string | null>(null);
+  const [aiQuestionsSourcesOpen, setAiQuestionsSourcesOpen] = useState(false);
+  const [aiEvidence, setAiEvidence] = useState<EvidenceSuggestion | null>(null);
+  const [aiEvidenceLoading, setAiEvidenceLoading] = useState(false);
+  const [aiEvidenceError, setAiEvidenceError] = useState<string | null>(null);
+  const [aiEvidenceSourcesOpen, setAiEvidenceSourcesOpen] = useState(false);
+  const [aiDevelopment, setAiDevelopment] =
+    useState<DevelopmentSuggestion | null>(null);
+  const [aiDevelopmentLoading, setAiDevelopmentLoading] = useState(false);
+  const [aiDevelopmentError, setAiDevelopmentError] = useState<string | null>(
+    null,
+  );
   const [interviewDate, setInterviewDate] = useState("");
   const [interviewNotes, setInterviewNotes] = useState("");
   const [scores, setScores] = useState<PartialScores>({});
@@ -128,6 +166,10 @@ export function ProcessDetailPage() {
   const [enteringIndicatorId, setEnteringIndicatorId] = useState<string | null>(
     null,
   );
+  /** Ręcznie rozwinięte kompetencje (po auto-zwinięciu przy przejściu dalej). */
+  const [sheetExpandedCodes, setSheetExpandedCodes] = useState<
+    Record<string, boolean>
+  >({});
   const [fieldToast, setFieldToast] = useState<string | null>(null);
   const [attentionField, setAttentionField] = useState<string | null>(null);
   const quizAnimRef = useRef<number | null>(null);
@@ -289,6 +331,14 @@ export function ProcessDetailPage() {
     return stageState(stageId, row.status, row.progress_percent ?? 0);
   }
 
+  const hrMode = isHrRole(profile?.role);
+  const canEval = canRunEvaluation(profile?.role);
+
+  /** Etap aktywny i wolno prowadzić ocenę (nie HR). */
+  function act(stageId: StageId) {
+    return canEval && st(stageId) === "active";
+  }
+
   const nearest = useMemo(() => {
     if (!row) return null;
     return nearestDeadlineForCase(row);
@@ -317,10 +367,69 @@ export function ProcessDetailPage() {
     [allCompetencies, row?.evaluation_type, sheetType, extraCriteria],
   );
 
+  useEffect(() => {
+    if (!row) {
+      setOpenProcess(null);
+      return;
+    }
+    const filled = competencies.filter((c) => scores[c.code] != null).length;
+    setOpenProcess({
+      caseId: row.id,
+      evaluationType: row.evaluation_type,
+      sheetType:
+        row.sheet_type ||
+        (row.evaluation_type === "periodic" ? "C" : "first"),
+      status: row.status,
+      viewStage,
+      activeStage,
+      employeeJobTitle:
+        row.employee.job_title || row.employee_job_title || null,
+      employeeOrgUnit: row.employee.org_unit || row.employee_org_unit || null,
+      employeeDisplayName: null,
+      nearestDeadline: nearestDeadlineForCase(row),
+      introTalkAt: row.intro_talk_at,
+      reportDueFrom: row.report_due_from,
+      reportDueTo: row.report_due_to,
+      reportSubmittedAt: row.report_submitted_at || reportDate || null,
+      hasReportFile: Boolean(row.report_file_path),
+      hasReportNotes: Boolean((reportNotes || row.report_notes || "").trim()),
+      notesCount: notes.length,
+      criteriaTalkAt: row.criteria_talk_at,
+      cycleDueAt: row.cycle_due_at || row.next_cycle_due_at,
+      verdict: verdict || row.verdict || null,
+      hasJustification: Boolean(
+        (justification || row.verdict_justification || "").trim(),
+      ),
+      scoresFilled: filled,
+      scoresTotal: competencies.length,
+    });
+    return () => setOpenProcess(null);
+  }, [
+    row,
+    viewStage,
+    activeStage,
+    notes.length,
+    reportDate,
+    reportNotes,
+    scores,
+    competencies,
+    verdict,
+    justification,
+    setOpenProcess,
+  ]);
+
   const extraCandidates = useMemo(() => {
     if (!isPeriodic || (sheetType !== "B" && sheetType !== "C")) return [];
     return extraCriteriaCandidates(allCompetencies, sheetType);
   }, [allCompetencies, isPeriodic, sheetType]);
+
+  const matchedOsp = useMemo(() => {
+    if (!row) return undefined;
+    return findOspPresetByJobAndUnit(
+      row.employee.job_title || row.employee_job_title,
+      row.employee.org_unit || row.employee_org_unit,
+    );
+  }, [row]);
 
   useEffect(() => {
     if (!row || !isPeriodic) return;
@@ -329,10 +438,10 @@ export function ProcessDetailPage() {
     if (extraCandidates.length === 0) return;
 
     const key = `${row.id}:${sheetType}:${row.employee.job_title || ""}:${extraCandidates.map((c) => c.code).join(",")}`;
+    // Po udanym fetchu nie powtarzaj; przy Strict Mode nie blokuj anulowanego pierwszego runu
     if (aiSuggestKeyRef.current === key) return;
 
     let cancelled = false;
-    aiSuggestKeyRef.current = key;
     setAiSuggestLoading(true);
     setAiSuggestError(null);
 
@@ -353,15 +462,17 @@ export function ProcessDetailPage() {
       })),
     })
       .then((s) => {
-        if (!cancelled) setAiSuggest(s);
+        if (cancelled) return;
+        aiSuggestKeyRef.current = key;
+        setAiSuggest(s);
+        setAiSuggestError(null);
       })
       .catch((e: unknown) => {
-        if (!cancelled) {
-          setAiSuggest(null);
-          setAiSuggestError(
-            e instanceof Error ? e.message : "Nie udało się pobrać sugestii AI",
-          );
-        }
+        if (cancelled) return;
+        setAiSuggest(null);
+        setAiSuggestError(
+          e instanceof Error ? e.message : "Nie udało się pobrać sugestii AI",
+        );
       })
       .finally(() => {
         if (!cancelled) setAiSuggestLoading(false);
@@ -370,11 +481,11 @@ export function ProcessDetailPage() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- świadomie: raz na otwarcie etapu/kryteriów
   }, [
     row?.id,
     row?.employee.job_title,
     row?.employee.org_unit,
+    row?.employee_org_unit,
     isPeriodic,
     viewStage,
     sheetType,
@@ -616,7 +727,7 @@ export function ProcessDetailPage() {
       if (prevPath && prevPath !== meta.report_file_path) {
         await removeReportFile(prevPath).catch(() => undefined);
       }
-      if (!reportDate) {
+    if (!reportDate) {
         setReportDate(new Date().toISOString().slice(0, 10));
       }
     } catch (e) {
@@ -694,12 +805,12 @@ export function ProcessDetailPage() {
         ? {
             assessment_interview_at: interviewDate,
             extra_criteria: extraCriteria,
-            status: nextStatus,
-            progress_percent: progressForStatus(nextStatus),
-            nearest_deadline: nearestDeadlineForCase({
-              ...row!,
-              status: nextStatus,
-            }),
+      status: nextStatus,
+      progress_percent: progressForStatus(nextStatus),
+      nearest_deadline: nearestDeadlineForCase({
+        ...row!,
+        status: nextStatus,
+      }),
           }
         : {
             prep_service_end_at: prepEnd || null,
@@ -708,13 +819,13 @@ export function ProcessDetailPage() {
             report_submitted_at: reportDate,
             report_on_time: reportOnTime,
             report_notes: reportNotes || null,
-            assessment_interview_at: interviewDate,
-            status: nextStatus,
-            progress_percent: progressForStatus(nextStatus),
-            nearest_deadline: nearestDeadlineForCase({
-              ...row!,
-              status: nextStatus,
-            }),
+      assessment_interview_at: interviewDate,
+      status: nextStatus,
+      progress_percent: progressForStatus(nextStatus),
+      nearest_deadline: nearestDeadlineForCase({
+        ...row!,
+        status: nextStatus,
+      }),
           },
     );
     if (ok) setSelectedStage(3);
@@ -841,8 +952,7 @@ export function ProcessDetailPage() {
       extra_criteria: isPeriodic ? extraCriteria : undefined,
       verdict,
       verdict_justification: justification || null,
-      development_notes:
-        verdict === "positive" ? developmentNotes || null : null,
+      development_notes: developmentNotes || null,
       status: "completed",
       progress_percent: 100,
       nearest_deadline: null,
@@ -871,8 +981,23 @@ export function ProcessDetailPage() {
       row.employee.full_name
     : "";
 
+  const hrLockNote = (
+    <div className="alert alert-warn hr-lock-note">
+      Niedostępne w widoku HR — ocenę prowadzi przełożony.
+    </div>
+  );
+
   return (
-    <AppShell title="Sprawa">
+    <AppShell>
+      {hrMode ? (
+        <div className="hr-banner">
+          <strong>Widok HR — nadzór</strong>
+          <span>
+            Pełny podgląd procesu. Prowadzenie oceny (rozmowy, arkusz, werdykt,
+            uwagi) jest zablokowane.
+          </span>
+        </div>
+      ) : null}
       {fieldToast ? (
         <div
           className="app-modal-backdrop"
@@ -896,16 +1021,10 @@ export function ProcessDetailPage() {
               >
                 OK
               </button>
-            </div>
+      </div>
           </div>
         </div>
       ) : null}
-
-      <div className="actions" style={{ marginTop: 0, marginBottom: "0.75rem" }}>
-        <Link className="btn btn-ghost" to="/dashboard">
-          ← Lista procesów
-        </Link>
-      </div>
 
       {error ? <div className="alert alert-error">{error}</div> : null}
 
@@ -913,21 +1032,44 @@ export function ProcessDetailPage() {
 
       {row ? (
         <>
+          <div className="case-back-row">
+            <Link className="text-link case-back" to="/dashboard">
+              Lista procesów
+            </Link>
+          </div>
           <header className="case-header">
+            <div className="case-header-main">
+              <div className="case-header-top">
+                <span className="case-type-badge">
+                  {EVAL_TYPE_LABELS[row.evaluation_type]}
+                  {isPeriodic && (sheetType === "B" || sheetType === "C")
+                    ? ` · ${sheetLabel(sheetType)}`
+                    : ""}
+                </span>
+              </div>
+              <h2 className="case-employee-name">{name}</h2>
+              <dl className="case-employee-facts">
             <div>
-              <p className="eyebrow">
-                {EVAL_TYPE_LABELS[row.evaluation_type]}
-                {isPeriodic && (sheetType === "B" || sheetType === "C")
-                  ? ` · ${sheetLabel(sheetType)}`
-                  : ""}
-              </p>
-              <h2 style={{ margin: "0.25rem 0" }}>{name}</h2>
-              <p className="muted" style={{ margin: 0 }}>
-                {[row.employee.job_title, row.employee.org_unit]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </p>
-              <div className="actions notes-actions">
+                  <dt>Stanowisko:</dt>
+                  <dd>
+                    {row.employee.job_title
+                      ? capitalizeFirst(row.employee.job_title)
+                      : "—"}
+                  </dd>
+            </div>
+              <div>
+                  <dt>Komórka:</dt>
+                  <dd
+                    className="case-org"
+                    title={row.employee.org_unit || undefined}
+                  >
+                    {row.employee.org_unit
+                      ? formatOrgUnitShort(row.employee.org_unit)
+                      : "—"}
+                  </dd>
+                </div>
+              </dl>
+              <div className="notes-actions">
                 <button
                   className="btn btn-notes"
                   type="button"
@@ -941,16 +1083,19 @@ export function ProcessDetailPage() {
                     });
                   }}
                 >
-                  Uwagi ({notes.length})
+                  Dodaj/Czytaj Uwagi
+                  {notes.length > 0 ? ` (${notes.length})` : ""}
                 </button>
               </div>
             </div>
             <div className="case-header-meta">
-              <div>
+              <div className="case-meta-card">
                 <span className="meta-label">Etap</span>
-                <strong>{STATUS_LABELS[row.status]}</strong>
+                <strong>
+                  {statusLabelForCase(row.status, row.evaluation_type)}
+                </strong>
               </div>
-              <div>
+              <div className="case-meta-card">
                 <span className="meta-label">Terminowość</span>
                 <span className={`dot dot-${timeliness}`}>
                   {timelinessLabel(timeliness)}
@@ -958,21 +1103,21 @@ export function ProcessDetailPage() {
               </div>
               {isPeriodic ? (
                 <>
-                  <div>
+                  <div className="case-meta-card">
                     <span className="meta-label">Kotwica</span>
                     <strong>{row.cycle_anchor_at || "—"}</strong>
                   </div>
-                  <div>
+                  <div className="case-meta-card">
                     <span className="meta-label">Sporządzenie</span>
                     <strong>{row.cycle_due_at || "—"}</strong>
                   </div>
-                  <div>
+                  <div className="case-meta-card">
                     <span className="meta-label">Kolejny cykl</span>
                     <strong>{row.next_cycle_due_at || "—"}</strong>
                   </div>
                 </>
               ) : (
-                <div>
+                <div className="case-meta-card">
                   <span className="meta-label">Kwalifikacja</span>
                   <strong>
                     {row.eligibility_result
@@ -991,7 +1136,7 @@ export function ProcessDetailPage() {
               <div className="notes-panel-head">
                 <h3 style={{ margin: 0 }}>Uwagi o pracowniku</h3>
                 <div className="actions">
-                  {!notesAdding ? (
+                  {canEval && !notesAdding ? (
                     <button
                       className="btn btn-primary"
                       type="button"
@@ -1153,7 +1298,9 @@ export function ProcessDetailPage() {
               <h2 style={{ marginTop: 0 }}>
                 {stages[viewStage - 1].title}
               </h2>
-              <p className="muted">{stages[viewStage - 1].description}</p>
+              {stages[viewStage - 1].description ? (
+                <p className="muted">{stages[viewStage - 1].description}</p>
+              ) : null}
 
               {st(viewStage) === "locked" ? (
                 <div className="alert alert-warn">
@@ -1189,7 +1336,7 @@ export function ProcessDetailPage() {
                     <input
                       type="date"
                       value={criteriaTalkDate}
-                      disabled={st(1) !== "active"}
+                      disabled={!act(1)}
                       onChange={(e) => setCriteriaTalkDate(e.target.value)}
                     />
                   </label>
@@ -1211,7 +1358,7 @@ export function ProcessDetailPage() {
                       <button
                         type="button"
                         className="btn btn-ghost btn-small"
-                        disabled={aiSuggestLoading || st(1) !== "active"}
+                        disabled={aiSuggestLoading || !act(1)}
                         onClick={() => {
                           aiSuggestKeyRef.current = null;
                           setAiSuggest(null);
@@ -1266,11 +1413,13 @@ export function ProcessDetailPage() {
                     {aiSuggestError ? (
                       <div className="alert alert-warn">{aiSuggestError}</div>
                     ) : null}
+                    {!aiSuggestLoading && !aiSuggestError && !aiSuggest ? (
+                      <p className="muted">
+                        Brak sugestii — kliknij <strong>Odśwież</strong>.
+                      </p>
+                    ) : null}
                     {aiSuggest && !aiSuggestLoading ? (
                       <>
-                        <p className="ai-suggest-rationale">
-                          {aiSuggest.rationale}
-                        </p>
                         {aiSuggest.codes.length > 0 ? (
                           <ul className="ai-suggest-list">
                             {aiSuggest.codes.map((code) => {
@@ -1278,14 +1427,59 @@ export function ProcessDetailPage() {
                                 (x) => x.code === code,
                               );
                               return (
-                                <li key={code}>{c?.name || code}</li>
+                                <li key={code}>
+                                  <strong>{c?.name || code}</strong>
+                                </li>
                               );
                             })}
                           </ul>
                         ) : (
-                          <p className="muted">Brak konkretnych propozycji.</p>
+                          <p className="muted">
+                            Brak pewnych propozycji z listy kompetencji — wybierz
+                            ręcznie albo doprecyzuj stanowisko.
+                          </p>
                         )}
-                        {st(1) === "active" && aiSuggest.codes.length > 0 ? (
+                        {(matchedOsp || aiSuggest.sources.length > 0) && (
+                          <div className="ai-suggest-sources">
+                            <button
+                              type="button"
+                              className="ai-sources-toggle"
+                              aria-expanded={aiSourcesOpen}
+                              onClick={() => setAiSourcesOpen((o) => !o)}
+                            >
+                              Źródła…
+                              <span aria-hidden="true">
+                                {aiSourcesOpen ? " ▾" : " ▸"}
+                              </span>
+                            </button>
+                            {aiSourcesOpen ? (
+                              <ul>
+                                {matchedOsp ? (
+                                  <li>
+                                    {matchedOsp.label} ·{" "}
+                                    <a
+                                      href={matchedOsp.pdf}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      PDF OSP
+                                    </a>
+                                  </li>
+                                ) : null}
+                                {aiSuggest.sources
+                                  .filter(
+                                    (s) =>
+                                      !matchedOsp ||
+                                      !s.includes(matchedOsp.pdf),
+                                  )
+                                  .map((s) => (
+                                    <li key={s}>{s}</li>
+                                  ))}
+                              </ul>
+                            ) : null}
+                          </div>
+                        )}
+                        {act(1) && aiSuggest.codes.length > 0 ? (
                           <button
                             type="button"
                             className="btn btn-primary btn-small"
@@ -1296,10 +1490,6 @@ export function ProcessDetailPage() {
                             Zastosuj sugestię
                           </button>
                         ) : null}
-                        <p className="cell-muted">
-                          Model: {aiSuggest.model} · możesz zmienić zaznaczenie
-                          ręcznie
-                        </p>
                       </>
                     ) : null}
                   </div>
@@ -1317,7 +1507,7 @@ export function ProcessDetailPage() {
                         <input
                           type="checkbox"
                           disabled={
-                            st(1) !== "active" ||
+                            !act(1) ||
                             (!extraCriteria.includes(c.code) &&
                               extraCriteria.length >= 3)
                           }
@@ -1333,7 +1523,7 @@ export function ProcessDetailPage() {
                       </label>
                     ))}
                   </div>
-                  {st(1) === "active" ? (
+                  {act(1) ? (
                     <button
                       className="btn btn-primary"
                       type="button"
@@ -1344,6 +1534,8 @@ export function ProcessDetailPage() {
                         ? "Zapisywanie…"
                         : "Potwierdź kryteria i termin"}
                     </button>
+                  ) : st(1) === "active" ? (
+                    hrLockNote
                   ) : (
                     <div className="alert eligibility-eligible">
                       Kryteria i termin potwierdzone
@@ -1368,44 +1560,175 @@ export function ProcessDetailPage() {
                     <input
                       type="date"
                       value={introDate}
-                      disabled={st(1) !== "active"}
+                      disabled={!act(1)}
                       onChange={(e) => setIntroDate(e.target.value)}
                     />
                   </label>
+
+                  <div className="ai-suggest-panel">
+                    <div className="ai-suggest-head">
+                      <strong>Sugestia AI (OSP → pytania)</strong>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-small"
+                        disabled={aiQuestionsLoading}
+                        onClick={() => {
+                          setAiQuestionsLoading(true);
+                          setAiQuestionsError(null);
+                          setAiQuestionsSourcesOpen(false);
+                          void suggestIntroQuestions({
+                            jobTitle:
+                              row.employee.job_title ||
+                              row.employee_job_title ||
+                              "stanowisko",
+                            orgUnit:
+                              row.employee.org_unit || row.employee_org_unit,
+                            kind: "first_intro",
+                          })
+                            .then((s) => {
+                              setAiQuestions(s);
+                              setAiQuestionsError(null);
+                            })
+                            .catch((e: unknown) => {
+                              setAiQuestions(null);
+                              setAiQuestionsError(
+                                e instanceof Error
+                                  ? e.message
+                                  : "Nie udało się zasugerować pytań",
+                              );
+                            })
+                            .finally(() => setAiQuestionsLoading(false));
+                        }}
+                      >
+                        {aiQuestionsLoading
+                          ? "Generuję…"
+                          : aiQuestions
+                            ? "Odśwież pytania"
+                            : "Zasugeruj pytania AI"}
+                      </button>
+                    </div>
+                    {aiQuestionsLoading ? (
+                      <p className="muted">
+                        Dobieram pytania na podstawie OSP…
+                      </p>
+                    ) : null}
+                    {aiQuestionsError ? (
+                      <div className="alert alert-warn">{aiQuestionsError}</div>
+                    ) : null}
+                    {!aiQuestionsLoading && !aiQuestions && !aiQuestionsError ? (
+                      <p className="muted">
+                        Pytania do omówienia obowiązków i oczekiwań — na
+                        podstawie opisu stanowiska.
+                      </p>
+                    ) : null}
+                    {aiQuestions && !aiQuestionsLoading ? (
+                      <>
+                        <ol className="ai-suggest-list ai-questions-list">
+                          {aiQuestions.questions.map((q, i) => (
+                            <li key={`${i}-${q.question.slice(0, 24)}`}>
+                              <strong>{q.question}</strong>
+                              {q.focus ? (
+                                <span className="cell-muted">
+                                  {" "}
+                                  · {q.focus}
+                                </span>
+                              ) : null}
+                            </li>
+                          ))}
+                        </ol>
+                        {(matchedOsp || aiQuestions.sources.length > 0) && (
+                          <div className="ai-suggest-sources">
+                            <button
+                              type="button"
+                              className="ai-sources-toggle"
+                              aria-expanded={aiQuestionsSourcesOpen}
+                              onClick={() =>
+                                setAiQuestionsSourcesOpen((o) => !o)
+                              }
+                            >
+                              Źródła…
+                              <span aria-hidden="true">
+                                {aiQuestionsSourcesOpen ? " ▾" : " ▸"}
+                              </span>
+                            </button>
+                            {aiQuestionsSourcesOpen ? (
+                              <ul>
+                                {matchedOsp ? (
+                                  <li>
+                                    {matchedOsp.label} ·{" "}
+                                    <a
+                                      href={matchedOsp.pdf}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      PDF OSP
+                                    </a>
+                                  </li>
+                                ) : null}
+                                {aiQuestions.sources
+                                  .filter(
+                                    (s) =>
+                                      !matchedOsp ||
+                                      !s.includes(matchedOsp.pdf),
+                                  )
+                                  .map((s) => (
+                                    <li key={s}>{s}</li>
+                                  ))}
+                              </ul>
+                            ) : null}
+                          </div>
+                        )}
+                      </>
+                    ) : null}
+                  </div>
+
                   <div
                     data-field="intro-checklist"
-                    className={
+                    className={`intro-checklist${
                       attentionField === "intro-checklist"
-                        ? "field-attention"
+                        ? " field-attention"
                         : ""
-                    }
+                    }`}
                   >
-                  {(
-                    [
-                      ["procedure", "Omówiono procedurę i etapy pierwszej oceny"],
-                      ["elements", "Omówiono 5 elementów oceny"],
-                      ["expectations", "Omówiono oczekiwania przełożonego"],
-                      ["jobDesc", "Omówiono obowiązki z opisu stanowiska"],
-                      ["reportDeadline", "Wyznaczono termin sprawozdania"],
-                    ] as const
-                  ).map(([key, label]) => (
-                    <label key={key} className="check">
-                      <input
-                        type="checkbox"
-                        checked={checklist[key]}
-                        disabled={st(1) !== "active"}
-                        onChange={(e) =>
-                          setChecklist({
-                            ...checklist,
-                            [key]: e.target.checked,
-                          })
-                        }
-                      />
-                      <span>{label}</span>
-                    </label>
-                  ))}
+                    {(
+                      [
+                        [
+                          "procedure",
+                          "Omówiono procedurę i etapy pierwszej oceny",
+                        ],
+                        ["elements", "Omówiono 5 elementów oceny"],
+                        [
+                          "expectations",
+                          "Omówiono oczekiwania przełożonego",
+                        ],
+                        [
+                          "jobDesc",
+                          "Omówiono obowiązki z opisu stanowiska",
+                        ],
+                        [
+                          "reportDeadline",
+                          "Wyznaczono termin sprawozdania",
+                        ],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <label key={key} className="intro-check">
+                        <input
+                          type="checkbox"
+                          checked={checklist[key]}
+                          disabled={!act(1)}
+                          onChange={(e) =>
+                            setChecklist({
+                              ...checklist,
+                              [key]: e.target.checked,
+                            })
+                          }
+                        />
+                        <span className="intro-check-box" aria-hidden="true" />
+                        <span className="intro-check-label">{label}</span>
+                      </label>
+                    ))}
                   </div>
-                  {st(1) === "active" ? (
+                  {act(1) ? (
                     <button
                       className="btn btn-primary"
                       type="button"
@@ -1414,6 +1737,8 @@ export function ProcessDetailPage() {
                     >
                       {saving ? "Zapisywanie…" : "Potwierdź rozmowę wstępną"}
                     </button>
+                  ) : st(1) === "active" ? (
+                    hrLockNote
                   ) : (
                     <div className="alert eligibility-eligible">
                       Rozmowa wstępna potwierdzona
@@ -1449,11 +1774,11 @@ export function ProcessDetailPage() {
                     <input
                       type="date"
                       value={interviewDate}
-                      disabled={st(2) !== "active"}
+                      disabled={!act(2)}
                       onChange={(e) => setInterviewDate(e.target.value)}
                     />
                   </label>
-                  {st(2) === "active" ? (
+                  {act(2) ? (
                     <button
                       className="btn btn-primary"
                       type="button"
@@ -1462,6 +1787,8 @@ export function ProcessDetailPage() {
                     >
                       Rozpocznij rozmowę i arkusz
                     </button>
+                  ) : st(2) === "active" ? (
+                    hrLockNote
                   ) : (
                     <div className="alert eligibility-eligible">
                       Okres domknięty — jesteś w etapie rozmowy i arkusza.
@@ -1486,12 +1813,12 @@ export function ProcessDetailPage() {
                   </div>
 
                   <div className="grid-2">
-                    <label>
+                  <label>
                       <span>Data zakończenia służby przygotowawczej</span>
                       <input
                         type="date"
                         value={prepEnd}
-                        disabled={st(2) !== "active"}
+                        disabled={!act(2)}
                         onChange={(e) => setPrepEnd(e.target.value)}
                       />
                     </label>
@@ -1503,65 +1830,25 @@ export function ProcessDetailPage() {
                           : ""
                       }
                     >
-                      <span>Wynik egzaminu</span>
-                      <select
-                        value={examResult}
-                        disabled={st(2) !== "active"}
-                        onChange={(e) =>
-                          setExamResult(
-                            e.target.value as "pass" | "fail" | "na" | "",
-                          )
-                        }
-                      >
-                        <option value="">— wybierz —</option>
-                        <option value="pass">Zaliczony</option>
-                        <option value="fail">Niezaliczony</option>
-                        <option value="na">Nie dotyczy</option>
-                      </select>
-                    </label>
-                  </div>
-
-                  <h3>Sprawozdanie</h3>
-                  <p className="muted">
-                    Okno: {row.report_due_from || "—"} — {row.report_due_to || "—"}
-                  </p>
-                  <div className="grid-2">
-                    <label
-                      data-field="report-date"
-                      className={
-                        attentionField === "report-date"
-                          ? "field-attention"
-                          : ""
+                    <span>Wynik egzaminu</span>
+                    <select
+                      value={examResult}
+                      disabled={!act(2)}
+                      onChange={(e) =>
+                        setExamResult(
+                          e.target.value as "pass" | "fail" | "na" | "",
+                        )
                       }
                     >
-                      <span>Data złożenia sprawozdania</span>
-                      <input
-                        type="date"
-                        value={reportDate}
-                        disabled={st(2) !== "active"}
-                        onChange={(e) => setReportDate(e.target.value)}
-                      />
-                    </label>
-                    <label className="check" style={{ alignSelf: "end" }}>
-                      <input
-                        type="checkbox"
-                        checked={reportOnTime}
-                        disabled={st(2) !== "active" || !reportDate}
-                        onChange={(e) => setReportOnTime(e.target.checked)}
-                      />
-                      <span>W wyznaczonym terminie</span>
-                    </label>
-                  </div>
-                  <label>
-                    <span>Notatka / opis sprawozdania</span>
-                    <input
-                      value={reportNotes}
-                      disabled={st(2) !== "active"}
-                      onChange={(e) => setReportNotes(e.target.value)}
-                      placeholder="np. złożone w EZD / skrót treści"
-                    />
+                      <option value="">— wybierz —</option>
+                        <option value="pass">Zaliczony</option>
+                        <option value="fail">Niezaliczony</option>
+                      <option value="na">Nie dotyczy</option>
+                    </select>
                   </label>
+                    </div>
 
+                  <h3 className="case-section-title">Sprawozdanie</h3>
                   <div
                     data-field="report-file"
                     className={`report-upload${
@@ -1594,9 +1881,7 @@ export function ProcessDetailPage() {
                           >
                             Otwórz
                           </button>
-                          {st(2) === "active" ||
-                          row.status === "intro_done" ||
-                          row.status === "awaiting_report" ? (
+                          {act(2) ? (
                             <button
                               type="button"
                               className="btn btn-ghost btn-small"
@@ -1609,9 +1894,7 @@ export function ProcessDetailPage() {
                         </div>
                       </div>
                     ) : null}
-                    {st(2) === "active" ||
-                    row.status === "intro_done" ||
-                    row.status === "awaiting_report" ? (
+                    {act(2) ? (
                       <label className="report-file-input">
                         <span className="btn btn-ghost">
                           {reportUploading
@@ -1623,7 +1906,7 @@ export function ProcessDetailPage() {
                         <input
                           type="file"
                           accept=".pdf,.doc,.docx,image/jpeg,image/png,image/webp,application/pdf"
-                          disabled={reportUploading || row.status === "completed"}
+                          disabled={reportUploading}
                           onChange={(e) => {
                             const f = e.target.files?.[0] ?? null;
                             e.target.value = "";
@@ -1633,8 +1916,48 @@ export function ProcessDetailPage() {
                       </label>
                     ) : null}
                   </div>
+                  <div className="report-date-row">
+                    <label
+                      data-field="report-date"
+                      className={
+                        attentionField === "report-date"
+                          ? "field-attention"
+                          : ""
+                      }
+                    >
+                      <span>Data złożenia sprawozdania</span>
+                      <input
+                        type="date"
+                        value={reportDate}
+                        disabled={!act(2)}
+                        onChange={(e) => setReportDate(e.target.value)}
+                      />
+                    </label>
+                    <label className="report-ontime-check">
+                      <input
+                        type="checkbox"
+                        checked={reportOnTime}
+                        disabled={!act(2) || !reportDate}
+                        onChange={(e) => setReportOnTime(e.target.checked)}
+                      />
+                      <span className="intro-check-label">
+                        W wyznaczonym terminie
+                      </span>
+                    </label>
+                  </div>
+                  <label>
+                    <span>Notatka / opis sprawozdania</span>
+                    <input
+                      value={reportNotes}
+                      disabled={!act(2)}
+                      onChange={(e) => setReportNotes(e.target.value)}
+                      placeholder="np. złożone w EZD / skrót treści"
+                    />
+                  </label>
 
-                  <h3>Termin rozmowy oceniającej</h3>
+                  <h3 className="case-section-title">
+                    Termin rozmowy oceniającej
+                  </h3>
                   <label
                     data-field="interview-date"
                     className={
@@ -1643,16 +1966,16 @@ export function ProcessDetailPage() {
                         : ""
                     }
                   >
-                    <span>Data rozmowy</span>
+                    <span>Ustal datę rozmowy</span>
                     <input
                       type="date"
                       value={interviewDate}
-                      disabled={st(2) !== "active"}
+                      disabled={!act(2)}
                       onChange={(e) => setInterviewDate(e.target.value)}
                     />
                   </label>
 
-                  {st(2) === "active" ? (
+                  {act(2) ? (
                     <div className="actions">
                       <button
                         className="btn btn-ghost"
@@ -1671,6 +1994,8 @@ export function ProcessDetailPage() {
                         Rozpocznij rozmowę
                       </button>
                     </div>
+                  ) : st(2) === "active" ? (
+                    hrLockNote
                   ) : (
                     <div className="alert eligibility-eligible">
                       Okres domknięty — jesteś w etapie rozmowy i arkusza.
@@ -1682,9 +2007,161 @@ export function ProcessDetailPage() {
               {/* —— 3. Rozmowa + arkusz —— */}
               {viewStage === 3 && (
                 <div className="form">
-                  <p className="muted">
-                    Rozmowa: {row.assessment_interview_at || interviewDate || "—"}
-                  </p>
+                  <div className="ai-suggest-panel">
+                    <div className="ai-suggest-head">
+                      <strong>Podsumowanie / sugestia AI</strong>
+                    <button
+                      type="button"
+                        className="btn btn-primary btn-small"
+                        disabled={aiEvidenceLoading}
+                        onClick={() => {
+                          setAiEvidenceLoading(true);
+                          setAiEvidenceError(null);
+                          setAiEvidenceSourcesOpen(false);
+                          void (async () => {
+                            // odśwież uwagi tuż przed analizą
+                            let freshNotes = notes;
+                            if (row.employee.id) {
+                              const { data } = await supabase
+                                .from("employee_notes")
+                                .select("*")
+                                .eq("employee_id", row.employee.id)
+                                .order("noted_at", { ascending: false })
+                                .order("created_at", { ascending: false });
+                              if (data) {
+                                freshNotes = data as EmployeeNote[];
+                                setNotes(freshNotes);
+                              }
+                            }
+                            return suggestEvidenceFromFacts({
+                              jobTitle:
+                                row.employee.job_title ||
+                                row.employee_job_title ||
+                                "stanowisko",
+                              reportNotes: reportNotes || row.report_notes,
+                              reportFileName: row.report_file_name || null,
+                              interviewNotes: interviewNotes || null,
+                              notes: freshNotes.map((n) => ({
+                                tone: n.tone,
+                                subject: n.subject,
+                                body: n.body,
+                                noted_at: n.noted_at,
+                              })),
+                              competencies: competencies.map((c) => ({
+                                code: c.code,
+                                name: c.name,
+                                indicators: c.indicators.map((i) => ({
+                                  id: i.id,
+                                  title: i.title,
+                                })),
+                              })),
+                            });
+                          })()
+                            .then((s) => {
+                              setAiEvidence(s);
+                              setAiEvidenceError(null);
+                            })
+                            .catch((e: unknown) => {
+                              setAiEvidence(null);
+                              setAiEvidenceError(
+                                e instanceof Error
+                                  ? e.message
+                                  : "Nie udało się przygotować podsumowania",
+                              );
+                            })
+                            .finally(() => setAiEvidenceLoading(false));
+                        }}
+                      >
+                        {aiEvidenceLoading
+                          ? "Analizuję…"
+                          : aiEvidence
+                            ? "Odśwież podsumowanie"
+                            : "Podsumowanie / sugestia"}
+                    </button>
+                    </div>
+                    <p className="muted" style={{ margin: "0.25rem 0 0" }}>
+                      Porównuje fakty (uwagi → sprawozdanie → rozmowa) z{" "}
+                      <strong>wszystkimi kompetencjami tego arkusza</strong> i ich
+                      wskaźnikami (małymi pytaniami) — bez domysłów AI.
+                    </p>
+                    {aiEvidenceLoading ? (
+                      <p className="muted">
+                        Przechodzę model kompetencji i wskaźniki…
+                      </p>
+                  ) : null}
+                    {aiEvidenceError ? (
+                      <div className="alert alert-warn">{aiEvidenceError}</div>
+                    ) : null}
+                    {aiEvidence?.emptyReason ? (
+                      <div className="alert alert-warn">
+                        {aiEvidence.emptyReason}
+                </div>
+                    ) : null}
+                    {aiEvidence && !aiEvidence.emptyReason && !aiEvidenceLoading ? (
+                      <>
+                        <div className="evidence-summary-grid">
+                          <div>
+                            <h4 className="evidence-heading evidence-plus">
+                              Plusy (fakty)
+                            </h4>
+                            {aiEvidence.summaryPlus.length === 0 ? (
+                              <p className="muted">Brak istotnych informacji.</p>
+                            ) : (
+                              <ul className="ai-suggest-list">
+                                {aiEvidence.summaryPlus.map((c) => (
+                                  <li key={`p-${c.code}`}>
+                                    <strong>{c.name}</strong>
+                                    <div className="evidence-hint">{c.hint}</div>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                          <div>
+                            <h4 className="evidence-heading evidence-minus">
+                              Minusy (fakty)
+                            </h4>
+                            {aiEvidence.summaryMinus.length === 0 ? (
+                              <p className="muted">Brak istotnych informacji.</p>
+                            ) : (
+                              <ul className="ai-suggest-list">
+                                {aiEvidence.summaryMinus.map((c) => (
+                                  <li key={`m-${c.code}`}>
+                                    <strong>{c.name}</strong>
+                                    <div className="evidence-hint">{c.hint}</div>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        </div>
+                        {aiEvidence.sourcesUsed.length > 0 ? (
+                          <div className="ai-suggest-sources">
+                    <button
+                      type="button"
+                              className="ai-sources-toggle"
+                              aria-expanded={aiEvidenceSourcesOpen}
+                              onClick={() =>
+                                setAiEvidenceSourcesOpen((o) => !o)
+                              }
+                            >
+                              Źródła…
+                              <span aria-hidden="true">
+                                {aiEvidenceSourcesOpen ? " ▾" : " ▸"}
+                              </span>
+                    </button>
+                            {aiEvidenceSourcesOpen ? (
+                              <ul>
+                                {aiEvidence.sourcesUsed.map((s) => (
+                                  <li key={s}>{s}</li>
+                                ))}
+                              </ul>
+                            ) : null}
+                    </div>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </div>
 
                   <label>
                     <span>Notatki z rozmowy</span>
@@ -1692,7 +2169,7 @@ export function ProcessDetailPage() {
                       className="textarea"
                       rows={5}
                       value={interviewNotes}
-                      disabled={row.status === "completed"}
+                      disabled={row.status === "completed" || !canEval}
                       onChange={(e) => setInterviewNotes(e.target.value)}
                       placeholder="Mocne strony, obszary do rozwoju, ustalenia…"
                     />
@@ -1700,19 +2177,12 @@ export function ProcessDetailPage() {
 
                   <h3
                     data-field="sheet"
-                    className={
-                      attentionField === "sheet" ? "field-attention" : ""
-                    }
+                    className={`case-section-title${
+                      attentionField === "sheet" ? " field-attention" : ""
+                    }`}
                   >
                     Arkusz — model kompetencji
                   </h3>
-                  <p className="muted">
-                    {isPeriodic
-                      ? `Ocena okresowa (${sheetType}): poziomy 1 / 3 / 5 / 7 / 9. `
-                      : "Pierwsza ocena: poziomy 3 / 5 / 7. "}
-                    Pytania po kolei — po wyborze zostaje pytanie i ocena, potem
-                    kolejne. Po kompetencji możesz nadpisać ocenę cząstkową.
-                  </p>
 
                   {competencies.length === 0 ? (
                     <div className="alert alert-warn">
@@ -1751,9 +2221,122 @@ export function ProcessDetailPage() {
                     });
                     if (!hasVisible && !indDone) return null;
 
+                    const currentCompCode =
+                      sheetProgress.currentIdx >= 0
+                        ? sheetItems[sheetProgress.currentIdx]?.comp.code
+                        : null;
+                    const editingCompCode = editingIndicatorId
+                      ? competencies.find((c) =>
+                          c.indicators.some((i) => i.id === editingIndicatorId),
+                        )?.code
+                      : null;
+                    const isActiveSection =
+                      currentCompCode === comp.code ||
+                      editingCompCode === comp.code;
+                    const autoCollapsed =
+                      indDone &&
+                      !isActiveSection &&
+                      (Boolean(currentCompCode) || sheetProgress.done) &&
+                      row.status !== "completed";
+                    const collapsed =
+                      autoCollapsed && sheetExpandedCodes[comp.code] !== true;
+
+                    // Jedna podpowiedź AI na całą kompetencję (nie przy każdym pytaniu)
+                    let compEvidence = aiEvidence?.byCompetency[comp.code];
+                    if (
+                      !compEvidence ||
+                      compEvidence.lean === "brak_danych"
+                    ) {
+                      const fromInd = comp.indicators
+                        .map((i) => aiEvidence?.byIndicator[i.id])
+                        .find(
+                          (e) =>
+                            e &&
+                            (e.lean === "plus" ||
+                              e.lean === "minus" ||
+                              e.lean === "neutral"),
+                        );
+                      if (fromInd) {
+                        compEvidence = {
+                          code: comp.code,
+                          name: comp.name,
+                          lean: fromInd.lean,
+                          hint: fromInd.hint,
+                          sources: fromInd.sources,
+                        };
+                      }
+                    }
+                    const showCompEvidence =
+                      compEvidence &&
+                      (compEvidence.lean === "plus" ||
+                        compEvidence.lean === "minus" ||
+                        compEvidence.lean === "neutral");
+
                     return (
-                      <div key={comp.id} className="competency-block">
-                        <h4 className="competency-title">{comp.name}</h4>
+                      <div
+                        key={comp.id}
+                        className={`competency-block${
+                          collapsed ? " competency-collapsed" : ""
+                        }`}
+                      >
+                        <div className="competency-title-row">
+                          <h4 className="competency-title">{comp.name}</h4>
+                          {indDone && !isActiveSection ? (
+                            <button
+                              type="button"
+                              className="btn btn-small competency-toggle"
+                              onClick={() =>
+                                setSheetExpandedCodes((prev) => ({
+                                  ...prev,
+                                  [comp.code]: !prev[comp.code],
+                                }))
+                              }
+                            >
+                              {collapsed ? "Rozwiń" : "Zwiń"}
+                            </button>
+                          ) : null}
+                        </div>
+                        {collapsed ? (
+                          <p className="competency-collapsed-summary">
+                            Uzupełniono · ocena cząstkowa:{" "}
+                            {scores[comp.code] != null
+                              ? `${scores[comp.code]} pkt`
+                              : suggested != null
+                                ? `${suggested} pkt`
+                                : "—"}
+                          </p>
+                        ) : null}
+                        {!collapsed ? (
+                          <>
+                        {showCompEvidence && compEvidence ? (
+                          <div className="ai-suggest-panel ai-evidence-comp">
+                            <div className="ai-suggest-head">
+                              <strong>
+                                Sugestia AI
+                                {compEvidence.lean === "plus"
+                                  ? " · plus"
+                                  : compEvidence.lean === "minus"
+                                    ? " · minus"
+                                    : ""}
+                              </strong>
+                </div>
+                            <p className="ai-suggest-rationale">
+                              {compEvidence.hint}
+                            </p>
+                            {compEvidence.sources.length > 0 ? (
+                              <details className="evidence-src">
+                                <summary>Źródło</summary>
+                                <ul>
+                                  {compEvidence.sources.map((s, si) => (
+                                    <li key={si}>
+                                      <em>{s.kind}</em>: {s.quote}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </details>
+                            ) : null}
+                          </div>
+                        ) : null}
                         {comp.indicators.map((ind) => {
                           const levels = levelsForEvaluationType(
                             ind.levels,
@@ -1778,6 +2361,7 @@ export function ProcessDetailPage() {
                           const isClosing = closingIndicatorId === ind.id;
                           const isEntering = enteringIndicatorId === ind.id;
                           const showOptions =
+                            canEval &&
                             row.status !== "completed" &&
                             ((!answered && isCurrent) ||
                               isEditing ||
@@ -1808,15 +2392,15 @@ export function ProcessDetailPage() {
                                 <div
                                   className={`indicator-picked score-tone-${scoreTone(selectedPoints) ?? "mid"}`}
                                 >
-                                  <strong>
+                  <strong>
                                     {selectedLevel
                                       ? `${selectedLevel.points} pkt — ${selectedLevel.label}`
                                       : `${selectedPoints} pkt`}
-                                  </strong>
-                                  {row.status !== "completed" ? (
+                  </strong>
+                                  {canEval && row.status !== "completed" ? (
                                     <button
                                       type="button"
-                                      className="btn btn-ghost btn-small"
+                                      className="btn btn-pdf-glow btn-small"
                                       onClick={() =>
                                         setEditingIndicatorId(ind.id)
                                       }
@@ -1824,8 +2408,8 @@ export function ProcessDetailPage() {
                                       Zmień
                                     </button>
                                   ) : null}
-                                </div>
-                              </div>
+                </div>
+                </div>
                             );
                           }
 
@@ -1860,6 +2444,7 @@ export function ProcessDetailPage() {
                                       type="radio"
                                       name={`ind-${ind.id}`}
                                       disabled={
+                                        !canEval ||
                                         row.status === "completed" ||
                                         Boolean(closingIndicatorId)
                                       }
@@ -1877,10 +2462,10 @@ export function ProcessDetailPage() {
                                         {lv.points} pkt — {lv.label}
                                       </strong>
                                       <span>{lv.description}</span>
-                                    </span>
+                  </span>
                                   </label>
                                 ))}
-                              </div>
+                </div>
                               {isEditing && !isClosing ? (
                                 <button
                                   type="button"
@@ -1890,7 +2475,7 @@ export function ProcessDetailPage() {
                                   Anuluj
                                 </button>
                               ) : null}
-                            </div>
+              </div>
                           );
                         })}
                         {indDone ? (
@@ -1913,7 +2498,7 @@ export function ProcessDetailPage() {
                             </span>
                             <select
                               value={scores[comp.code] ?? ""}
-                              disabled={row.status === "completed"}
+                              disabled={row.status === "completed" || !canEval}
                               onChange={(e) => {
                                 const v = e.target.value;
                                 overrideScore(
@@ -1957,6 +2542,8 @@ export function ProcessDetailPage() {
                             </select>
                           </label>
                         ) : null}
+                          </>
+                        ) : null}
                       </div>
                     );
                   })}
@@ -1991,7 +2578,7 @@ export function ProcessDetailPage() {
                     Werdykt
                   </h3>
                   {isPeriodic ? (
-                    <p className="muted">
+              <p className="muted">
                       Pozytywna wymaga: średnia &gt; 4 oraz brak oceny 1 pkt na
                       żadnym kryterium.
                     </p>
@@ -2006,7 +2593,7 @@ export function ProcessDetailPage() {
                         type="radio"
                         name="verdict"
                         checked={verdict === "positive"}
-                        disabled={row.status === "completed"}
+                        disabled={row.status === "completed" || !canEval}
                         onChange={() => setVerdict("positive")}
                       />
                       <span>Pozytywna</span>
@@ -2020,7 +2607,7 @@ export function ProcessDetailPage() {
                         type="radio"
                         name="verdict"
                         checked={verdict === "negative"}
-                        disabled={row.status === "completed"}
+                        disabled={row.status === "completed" || !canEval}
                         onChange={() => setVerdict("negative")}
                       />
                       <span>Negatywna</span>
@@ -2043,25 +2630,168 @@ export function ProcessDetailPage() {
                       className="textarea"
                       rows={3}
                       value={justification}
-                      disabled={row.status === "completed"}
+                      disabled={row.status === "completed" || !canEval}
                       onChange={(e) => setJustification(e.target.value)}
                     />
                   </label>
 
-                  {verdict === "positive" ? (
-                    <label>
-                      <span>Wnioski rozwojowe (opcjonalnie)</span>
-                      <textarea
-                        className="textarea"
-                        rows={3}
-                        value={developmentNotes}
-                        disabled={row.status === "completed"}
-                        onChange={(e) => setDevelopmentNotes(e.target.value)}
-                      />
-                    </label>
-                  ) : null}
+                  <div className="ai-suggest-panel">
+                    <div className="ai-suggest-head">
+                      <strong>Podpowiedź AI — wnioski rozwojowe</strong>
+                      <button
+                        type="button"
+                        className={`btn btn-small ${
+                          aiDevelopment && !aiDevelopmentLoading
+                            ? "btn-primary"
+                            : "btn-pdf-glow"
+                        }`}
+                        disabled={
+                          aiDevelopmentLoading ||
+                          row.status === "completed" ||
+                          !canEval
+                        }
+                        onClick={() => {
+                          const scored = competencies
+                            .map((c) => {
+                              const score = scores[c.code];
+                              return score == null
+                                ? null
+                                : {
+                                    code: c.code,
+                                    name: c.name,
+                                    score: Number(score),
+                                  };
+                            })
+                            .filter(
+                              (
+                                x,
+                              ): x is {
+                                code: string;
+                                name: string;
+                                score: number;
+                              } => x != null,
+                            );
+                          setAiDevelopmentLoading(true);
+                          setAiDevelopmentError(null);
+                          void suggestDevelopmentActions({
+                            jobTitle:
+                              row.employee.job_title ||
+                              row.employee_job_title ||
+                              "stanowisko",
+                            orgUnit:
+                              row.employee.org_unit ||
+                              row.employee_org_unit ||
+                              null,
+                            evaluationType: row.evaluation_type,
+                            verdict,
+                            scoredCompetencies: scored,
+                            justification,
+                            notesSummary: notes
+                              .slice(0, 8)
+                              .map(
+                                (n) =>
+                                  `[${n.tone === "positive" ? "+" : "−"} ${n.subject}] ${n.body}`,
+                              )
+                              .join("\n"),
+                          })
+                            .then((s) => {
+                              setAiDevelopment(s);
+                              setAiDevelopmentError(null);
+                            })
+                            .catch((e: unknown) => {
+                              setAiDevelopment(null);
+                              setAiDevelopmentError(
+                                e instanceof Error
+                                  ? e.message
+                                  : "Nie udało się przygotować wniosków rozwojowych",
+                              );
+                            })
+                            .finally(() => setAiDevelopmentLoading(false));
+                        }}
+                      >
+                        {aiDevelopmentLoading
+                          ? "Analizuję…"
+                          : aiDevelopment
+                            ? "Odśwież podpowiedź"
+                            : "Podpowiedź AI"}
+                      </button>
+                    </div>
+                    <p className="muted" style={{ margin: "0.25rem 0 0" }}>
+                      Na podstawie najsłabszych ocen w arkuszu ogólnie wskazuje,
+                      nad czym warto popracować.
+                    </p>
+                    {aiDevelopmentLoading ? (
+                      <p className="muted">
+                        Sprawdzam słabsze obszary…
+                      </p>
+                    ) : null}
+                    {aiDevelopmentError ? (
+                      <div className="alert alert-warn">{aiDevelopmentError}</div>
+                    ) : null}
+                    {aiDevelopment?.emptyReason ? (
+                      <div className="alert alert-warn">
+                        {aiDevelopment.emptyReason}
+                      </div>
+                    ) : null}
+                    {aiDevelopment &&
+                    !aiDevelopment.emptyReason &&
+                    !aiDevelopmentLoading ? (
+                      <>
+                        {aiDevelopment.weakCompetencies.length ? (
+                          <p className="muted" style={{ marginTop: "0.5rem" }}>
+                            Słabsze obszary:{" "}
+                            <strong>
+                              {aiDevelopment.weakCompetencies
+                                .map(
+                                  (c) =>
+                                    `${c.name} (${c.score} pkt)`,
+                                )
+                                .join(", ")}
+                            </strong>
+                          </p>
+                        ) : null}
+                        <ol className="ai-suggest-list ai-questions-list">
+                          {aiDevelopment.actions.map((a, i) => (
+                            <li key={`${a.competencyCode || a.kind}-${i}`}>
+                              <strong>
+                                {a.competencyName
+                                  ? `Nad czym popracować · ${a.competencyName}`
+                                  : "Nad czym popracować"}
+                              </strong>
+                              <div>{a.action}</div>
+                            </li>
+                          ))}
+                        </ol>
+                        {canEval && row.status !== "completed" ? (
+                          <div className="actions" style={{ marginTop: "0.5rem" }}>
+                            <button
+                              type="button"
+                              className="btn btn-primary btn-small"
+                              onClick={() => {
+                                setDevelopmentNotes(aiDevelopment.text);
+                              }}
+                            >
+                              Zastosuj do wniosków rozwojowych
+                            </button>
+                          </div>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </div>
 
-                  {row.status !== "completed" ? (
+                  <label>
+                    <span>Wnioski rozwojowe (opcjonalnie)</span>
+                    <textarea
+                      className="textarea"
+                      rows={4}
+                      value={developmentNotes}
+                      disabled={row.status === "completed" || !canEval}
+                      onChange={(e) => setDevelopmentNotes(e.target.value)}
+                      placeholder="Po podpowiedzi AI możesz tu wkleić lub dopisać wnioski…"
+                    />
+                  </label>
+
+                  {canEval && row.status !== "completed" ? (
                     <div className="actions">
                       <button
                         className="btn btn-ghost"
@@ -2070,6 +2800,53 @@ export function ProcessDetailPage() {
                         onClick={() => void saveInterviewDraft()}
                       >
                         Zapisz roboczo
+                      </button>
+                      <button
+                        className="btn btn-pdf-glow"
+                        type="button"
+                        disabled={pdfBusy}
+                        onClick={() => {
+                          setPdfBusy(true);
+                          setError(null);
+                          void downloadFilledSheetPdf({
+                            caseRow: {
+                              ...row,
+                              interview_notes: interviewNotes,
+                              partial_scores: scores,
+                              indicator_answers: answers,
+                              extra_criteria: extraCriteria,
+                              verdict: (verdict || row.verdict) as
+                                | "positive"
+                                | "negative"
+                                | null,
+                              verdict_justification:
+                                justification ||
+                                row.verdict_justification ||
+                                null,
+                              development_notes:
+                                developmentNotes ||
+                                row.development_notes ||
+                                null,
+                            },
+                            employee: row.employee,
+                            competencies,
+                            scores,
+                            average: avg,
+                            supervisor: profile,
+                          })
+                            .catch((err: unknown) => {
+                              setError(
+                                err instanceof Error
+                                  ? err.message
+                                  : "Nie udało się wygenerować PDF",
+                              );
+                            })
+                            .finally(() => setPdfBusy(false));
+                        }}
+                      >
+                        {pdfBusy
+                          ? "Generowanie PDF…"
+                          : "Pobierz wypełniony arkusz (PDF)"}
                       </button>
                       <button
                         className="btn btn-primary"
@@ -2081,72 +2858,73 @@ export function ProcessDetailPage() {
                       </button>
                     </div>
                   ) : (
-                    <div className="alert eligibility-eligible">
-                      Proces zakończony
-                      {row.verdict
-                        ? ` — ocena ${
-                            row.verdict === "positive"
-                              ? "pozytywna"
-                              : "negatywna"
-                          }`
-                        : ""}
-                      .
-                    </div>
+                    <>
+                      {row.status === "completed" ? (
+                        <div className="alert eligibility-eligible">
+                          Proces zakończony
+                          {row.verdict
+                            ? ` — ocena ${
+                                row.verdict === "positive"
+                                  ? "pozytywna"
+                                  : "negatywna"
+                              }`
+                            : ""}
+                          .
+                        </div>
+                      ) : (
+                        hrLockNote
+                      )}
+                      <div className="actions" style={{ marginTop: "0.85rem" }}>
+                        <button
+                          className="btn btn-pdf-glow"
+                          type="button"
+                          disabled={pdfBusy}
+                          onClick={() => {
+                            setPdfBusy(true);
+                            setError(null);
+                            void downloadFilledSheetPdf({
+                              caseRow: {
+                                ...row,
+                                interview_notes: interviewNotes,
+                                partial_scores: scores,
+                                indicator_answers: answers,
+                                extra_criteria: extraCriteria,
+                                verdict: (verdict || row.verdict) as
+                                  | "positive"
+                                  | "negative"
+                                  | null,
+                                verdict_justification:
+                                  justification ||
+                                  row.verdict_justification ||
+                                  null,
+                                development_notes:
+                                  developmentNotes ||
+                                  row.development_notes ||
+                                  null,
+                              },
+                              employee: row.employee,
+                              competencies,
+                              scores,
+                              average: avg,
+                              supervisor: profile,
+                            })
+                              .catch((err: unknown) => {
+                                setError(
+                                  err instanceof Error
+                                    ? err.message
+                                    : "Nie udało się wygenerować PDF",
+                                );
+                              })
+                              .finally(() => setPdfBusy(false));
+                          }}
+                        >
+                          {pdfBusy
+                            ? "Generowanie PDF…"
+                            : "Pobierz wypełniony arkusz (PDF)"}
+                        </button>
+                      </div>
+                    </>
                   )}
-
-                  <div className="actions" style={{ marginTop: "0.85rem" }}>
-                    <button
-                      className="btn btn-ghost"
-                      type="button"
-                      disabled={pdfBusy}
-                      onClick={() => {
-                        setPdfBusy(true);
-                        setError(null);
-                        void downloadFilledSheetPdf({
-                          caseRow: {
-                            ...row,
-                            interview_notes: interviewNotes,
-                            partial_scores: scores,
-                            indicator_answers: answers,
-                            extra_criteria: extraCriteria,
-                            verdict: (verdict || row.verdict) as
-                              | "positive"
-                              | "negative"
-                              | null,
-                            verdict_justification:
-                              justification ||
-                              row.verdict_justification ||
-                              null,
-                            development_notes:
-                              developmentNotes ||
-                              row.development_notes ||
-                              null,
-                          },
-                          employee: row.employee,
-                          competencies,
-                          scores,
-                          average: avg,
-                          supervisor: profile,
-                        })
-                          .catch((err: unknown) => {
-                            setError(
-                              err instanceof Error
-                                ? err.message
-                                : "Nie udało się wygenerować PDF",
-                            );
-                          })
-                          .finally(() => setPdfBusy(false));
-                      }}
-                    >
-                      {pdfBusy
-                        ? "Generowanie PDF…"
-                        : "Pobierz wypełniony arkusz (PDF)"}
-                    </button>
-                  </div>
-                  <p className="muted" style={{ marginTop: "0.35rem" }}>
-                    Oficjalny wzór PDF (A/B/C) uzupełniany danymi z formularza.
-                    Podpisy — do uzupełnienia poza systemem.
-                  </p>
                 </div>
               )}
             </section>

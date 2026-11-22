@@ -21,17 +21,15 @@ export const STAGES_FIRST: StageDef[] = [
   },
   {
     id: 2,
-    title: "Okres oceny",
+    title: "Służba przygotowawcza",
     short: "Okres",
-    description:
-      "Trwa służba przygotowawcza / obserwacja. Tu ustalasz datę rozmowy oceniającej, dodajesz sprawozdanie i gdy gotowe — rozpoczynasz rozmowę.",
+    description: "",
   },
   {
     id: 3,
     title: "Rozmowa i arkusz",
     short: "Rozmowa",
-    description:
-      "Rozmowa oceniająca: notatki na żywo oraz wypełnienie arkusza (oceny cząstkowe, werdykt, wnioski).",
+    description: "",
   },
 ];
 
@@ -54,8 +52,7 @@ export const STAGES_PERIODIC: StageDef[] = [
     id: 3,
     title: "Rozmowa i arkusz B/C",
     short: "Rozmowa",
-    description:
-      "Rozmowa oceniająca i arkusz okresowy: wskaźniki (skala 1–9), średnia, poziom ogólny, werdykt i wnioski IPRZ.",
+    description: "",
   },
 ];
 

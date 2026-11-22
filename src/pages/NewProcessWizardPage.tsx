@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { AppShell } from "../components/AppShell";
 import { useAuth } from "../auth/AuthContext";
@@ -6,33 +6,38 @@ import {
   addMonths,
   computeDeadlines,
   eligibilityLabel,
+  needsAgreementQuestion,
   progressForStatus,
+  qualificationComplete,
+  qualificationToFlags,
   resolveEligibility,
   resolvePrepDefaults,
+  shouldShowPrepStep,
+  type QualificationAnswers,
+  type QualificationPath,
 } from "../lib/firstEvaluation";
 import {
   computePeriodicDeadlines,
   sheetLabel,
   type PeriodicSheet,
 } from "../lib/periodicEvaluation";
-import { OSP_JOB_TITLES } from "../lib/ospPositions";
+import {
+  findOspPreset,
+  findOspPresetByJobAndUnit,
+  OSP_PRESETS,
+} from "../lib/ospPositions";
 import { supabase } from "../lib/supabase";
-import { isStaffRole, type PrepServiceStatus } from "../types";
+import {
+  canRunEvaluation,
+  isStaffRole,
+  type PrepServiceStatus,
+} from "../types";
 
 type EvalKind = "first" | "periodic";
 
-const STEPS_FIRST = [
-  "Typ oceny",
-  "Dane pracownika",
-  "Kwalifikacja",
-  "Służba przygotowawcza",
-  "Obsada ról",
-] as const;
-
 const STEPS_PERIODIC = [
-  "Typ oceny",
   "Dane pracownika",
-  "Arkusz i cykl",
+  "Rodzaj oceny",
   "Obsada ról",
 ] as const;
 
@@ -51,35 +56,40 @@ export function NewProcessWizardPage() {
   const [lastName, setLastName] = useState("");
   const [orgUnit, setOrgUnit] = useState("");
   const [jobTitle, setJobTitle] = useState("");
+  const [ospPresetId, setOspPresetId] = useState("");
+  const [sheetSourcesOpen, setSheetSourcesOpen] = useState(false);
   const [hiredAt, setHiredAt] = useState("");
   const [contractEndAt, setContractEndAt] = useState("");
 
-  const [firstTime, setFirstTime] = useState(true);
-  const [isSubstitute, setIsSubstitute] = useState(false);
-  const [isKsap, setIsKsap] = useState(false);
-  const [isHigher, setIsHigher] = useState(false);
+  const [qualPath, setQualPath] = useState<QualificationPath>("first_time");
+  const [ksapExemptionRequested, setKsapExemptionRequested] = useState<
+    boolean | null
+  >(null);
+  const [agreementConcluded, setAgreementConcluded] = useState<boolean | null>(
+    null,
+  );
+
+  const qualAnswers: QualificationAnswers = useMemo(
+    () => ({
+      path: qualPath,
+      ksapExemptionRequested,
+      agreementConcluded,
+    }),
+    [qualPath, ksapExemptionRequested, agreementConcluded],
+  );
 
   const eligibility = useMemo(
-    () =>
-      resolveEligibility({
-        firstTimeCivilService: firstTime,
-        isSubstitute,
-        isKsapGraduate: isKsap,
-        isHigherPosition: isHigher,
-      }),
-    [firstTime, isSubstitute, isKsap, isHigher],
+    () => resolveEligibility(qualAnswers),
+    [qualAnswers],
   );
 
   const prepDefaults = useMemo(
-    () =>
-      resolvePrepDefaults({
-        firstTimeCivilService: firstTime,
-        isSubstitute,
-        isKsapGraduate: isKsap,
-        isHigherPosition: isHigher,
-      }),
-    [firstTime, isSubstitute, isKsap, isHigher],
+    () => resolvePrepDefaults(qualAnswers),
+    [qualAnswers],
   );
+
+  const showPrepStep =
+    evalKind === "first" && shouldShowPrepStep(qualAnswers);
 
   const [prepStatus, setPrepStatus] = useState<PrepServiceStatus | null>(null);
   const [examRequired, setExamRequired] = useState<boolean | null>(null);
@@ -90,7 +100,31 @@ export function NewProcessWizardPage() {
   const [unitHeadName, setUnitHeadName] = useState("");
   const [unitHeadSame, setUnitHeadSame] = useState(true);
 
-  const steps = evalKind === "first" ? STEPS_FIRST : STEPS_PERIODIC;
+  const steps = useMemo(() => {
+    if (evalKind === "periodic") return [...STEPS_PERIODIC];
+    if (showPrepStep) {
+      return [
+        "Dane pracownika",
+        "Rodzaj oceny",
+        "Kwalifikacja",
+        "Służba przygotowawcza",
+        "Obsada ról",
+      ];
+    }
+    return ["Dane pracownika", "Rodzaj oceny", "Kwalifikacja", "Obsada ról"];
+  }, [evalKind, showPrepStep]);
+
+  function setQualificationPath(path: QualificationPath) {
+    setQualPath(path);
+    setKsapExemptionRequested(null);
+    setAgreementConcluded(null);
+    setPrepStatus(null);
+    setExamRequired(null);
+  }
+
+  useEffect(() => {
+    setStep((s) => Math.min(s, Math.max(0, steps.length - 1)));
+  }, [steps.length]);
 
   const firstDeadlines = useMemo(() => {
     if (!hiredAt) return null;
@@ -111,6 +145,13 @@ export function NewProcessWizardPage() {
     });
   }, [cycleAnchorAt, hiredAt]);
 
+  const sheetOsp = useMemo(
+    () =>
+      findOspPreset(ospPresetId) ||
+      findOspPresetByJobAndUnit(jobTitle, orgUnit),
+    [ospPresetId, jobTitle, orgUnit],
+  );
+
   if (loading) {
     return (
       <div className="page">
@@ -122,35 +163,47 @@ export function NewProcessWizardPage() {
   if (profile?.role && !isStaffRole(profile.role)) {
     return <Navigate to="/login" replace />;
   }
+  if (!canRunEvaluation(profile?.role)) {
+    return <Navigate to="/dashboard" replace />;
+  }
 
   function canNext(): boolean {
-    if (step === 0) return true;
+    if (step === 0) {
+      return Boolean(
+        firstName &&
+          lastName &&
+          ospPresetId &&
+          orgUnit &&
+          jobTitle &&
+          hiredAt,
+      );
+    }
     if (step === 1) {
-      return Boolean(firstName && lastName && orgUnit && jobTitle && hiredAt);
+      if (evalKind === "periodic") return Boolean(periodicDeadlines);
+      return true;
     }
     if (evalKind === "first") {
+      if (step === 2) return qualificationComplete(qualAnswers);
       if (step === steps.length - 1) return Boolean(firstDeadlines);
       return true;
     }
-    // periodic
-    if (step === 2) return Boolean(periodicDeadlines);
     if (step === steps.length - 1) return Boolean(periodicDeadlines);
     return true;
   }
 
   function goNext() {
     setError(null);
+    if (step === 0) {
+      if (hiredAt && !cycleAnchorAt) setCycleAnchorAt(hiredAt);
+      if (sheetOsp) setSheet(sheetOsp.suggestedSheet);
+    }
     if (evalKind === "first" && step === 2) {
-      if (eligibility === "not_eligible") {
-        setError(
-          "Według odpowiedzi pracownik nie podlega pierwszej ocenie. Możesz wrócić i poprawić kwalifikację albo anulować.",
-        );
+      if (!qualificationComplete(qualAnswers)) {
+        setError("Uzupełnij odpowiedzi kwalifikacyjne.");
+        return;
       }
       setPrepStatus(prepDefaults.prepServiceStatus);
       setExamRequired(prepDefaults.examRequired);
-    }
-    if (evalKind === "periodic" && step === 1 && hiredAt && !cycleAnchorAt) {
-      setCycleAnchorAt(hiredAt);
     }
     setStep((s) => Math.min(s + 1, steps.length - 1));
   }
@@ -160,10 +213,8 @@ export function NewProcessWizardPage() {
 
     if (evalKind === "first") {
       if (!firstDeadlines) return;
-      if (eligibility === "not_eligible") {
-        setError(
-          "Nie można utworzyć procesu — pracownik nie podlega pierwszej ocenie.",
-        );
+      if (!qualificationComplete(qualAnswers)) {
+        setError("Uzupełnij kwalifikację przed utworzeniem procesu.");
         return;
       }
     } else if (!periodicDeadlines) {
@@ -208,6 +259,7 @@ export function NewProcessWizardPage() {
       year: new Date(hiredAt).getFullYear(),
     };
 
+    const flags = qualificationToFlags(qualAnswers);
     const payload =
       evalKind === "first"
         ? {
@@ -215,10 +267,10 @@ export function NewProcessWizardPage() {
             evaluation_type: "first" as const,
             sheet_type: "first" as const,
             eligibility_result: eligibility,
-            first_time_civil_service: firstTime,
-            is_substitute: isSubstitute,
-            is_ksap_graduate: isKsap,
-            is_higher_position: isHigher,
+            first_time_civil_service: flags.firstTimeCivilService,
+            is_substitute: flags.isSubstitute,
+            is_ksap_graduate: flags.isKsapGraduate,
+            is_higher_position: flags.isHigherPosition,
             prep_service_status: effectivePrep,
             exam_required: effectiveExam,
             prep_service_end_at:
@@ -296,42 +348,6 @@ export function NewProcessWizardPage() {
         <div className="wizard-panel">
           {step === 0 && (
             <>
-              <h2>Typ oceny</h2>
-              <p className="muted">
-                Pierwsza ocena (arkusz A) albo ocena okresowa (arkusz B/C, cykl
-                24 miesięcy).
-              </p>
-              <div className="actions" style={{ marginTop: "0.75rem" }}>
-                <label className="check">
-                  <input
-                    type="radio"
-                    name="evalKind"
-                    checked={evalKind === "first"}
-                    onChange={() => {
-                      setEvalKind("first");
-                      setStep(0);
-                    }}
-                  />
-                  <span>Pierwsza ocena (arkusz A)</span>
-                </label>
-                <label className="check">
-                  <input
-                    type="radio"
-                    name="evalKind"
-                    checked={evalKind === "periodic"}
-                    onChange={() => {
-                      setEvalKind("periodic");
-                      setStep(0);
-                    }}
-                  />
-                  <span>Ocena okresowa (arkusz B lub C)</span>
-                </label>
-              </div>
-            </>
-          )}
-
-          {step === 1 && (
-            <>
               <h2>Dane pracownika</h2>
               <div className="form grid-2">
                 <label>
@@ -350,29 +366,43 @@ export function NewProcessWizardPage() {
                     required
                   />
                 </label>
+              </div>
+              <div className="form">
+                <label>
+                  <span>Opis stanowiska (OSP) *</span>
+                  <select
+                    value={ospPresetId}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      setOspPresetId(id);
+                      const p = findOspPreset(id);
+                      if (!p) {
+                        setJobTitle("");
+                        setOrgUnit("");
+                        return;
+                      }
+                      setJobTitle(p.jobTitle);
+                      setOrgUnit(p.orgUnit);
+                    }}
+                    required
+                  >
+                    <option value="">— wybierz OSP —</option>
+                    {OSP_PRESETS.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="form grid-2">
                 <label>
                   <span>Komórka organizacyjna *</span>
-                  <input
-                    value={orgUnit}
-                    onChange={(e) => setOrgUnit(e.target.value)}
-                    placeholder="np. departament / wydział"
-                    required
-                  />
+                  <input value={orgUnit} readOnly required />
                 </label>
                 <label>
                   <span>Stanowisko *</span>
-                  <input
-                    list="osp-job-titles"
-                    value={jobTitle}
-                    onChange={(e) => setJobTitle(e.target.value)}
-                    placeholder="Wybierz z listy OSP lub wpisz…"
-                    required
-                  />
-                  <datalist id="osp-job-titles">
-                    {OSP_JOB_TITLES.map((t) => (
-                      <option key={t} value={t} />
-                    ))}
-                  </datalist>
+                  <input value={jobTitle} readOnly required />
                 </label>
                 <label>
                   <span>Data nawiązania stosunku pracy *</span>
@@ -398,50 +428,269 @@ export function NewProcessWizardPage() {
             </>
           )}
 
+          {step === 1 && (
+            <>
+              <h2>Rodzaj oceny</h2>
+              <p className="muted">
+                Wybierz pierwszą ocenę albo ocenę okresową. Przy okresowej —
+                wariant arkusza B/C (sugestia z OSP, jeśli dostępna).
+              </p>
+              <div className="actions" style={{ marginTop: "0.75rem" }}>
+                <label className="check">
+                  <input
+                    type="radio"
+                    name="evalKind"
+                    checked={evalKind === "first"}
+                    onChange={() => setEvalKind("first")}
+                  />
+                  <span>Pierwsza ocena</span>
+                </label>
+                <label className="check">
+                  <input
+                    type="radio"
+                    name="evalKind"
+                    checked={evalKind === "periodic"}
+                    onChange={() => {
+                      setEvalKind("periodic");
+                      if (sheetOsp) setSheet(sheetOsp.suggestedSheet);
+                      if (hiredAt && !cycleAnchorAt) setCycleAnchorAt(hiredAt);
+                    }}
+                  />
+                  <span>Ocena okresowa</span>
+                </label>
+              </div>
+
+              {evalKind === "periodic" ? (
+                <div className="form" style={{ marginTop: "1rem" }}>
+                  {sheetOsp ? (
+                    <div className="ai-suggest-panel">
+                      <div className="ai-suggest-head">
+                        <strong>Sugestia AI (OSP → arkusz)</strong>
+                      </div>
+                      <ul className="ai-suggest-list">
+                        <li>
+                          <strong>
+                            {sheetLabel(sheetOsp.suggestedSheet)}
+                          </strong>
+                        </li>
+                      </ul>
+                      <div className="ai-suggest-sources">
+                        <button
+                          type="button"
+                          className="ai-sources-toggle"
+                          aria-expanded={sheetSourcesOpen}
+                          onClick={() => setSheetSourcesOpen((o) => !o)}
+                        >
+                          Źródła…
+                          <span aria-hidden="true">
+                            {sheetSourcesOpen ? " ▾" : " ▸"}
+                          </span>
+                        </button>
+                        {sheetSourcesOpen ? (
+                          <ul>
+                            <li>
+                              {sheetOsp.label} ·{" "}
+                              <a
+                                href={sheetOsp.pdf}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                PDF OSP
+                              </a>
+                            </li>
+                            <li>
+                              {sheetOsp.managesPeople
+                                ? "OSP: stanowisko z kierowaniem ludźmi → arkusz B"
+                                : "OSP: brak kierowania ludźmi → arkusz C"}
+                            </li>
+                            {sheetOsp.softCompetenciesHint ? (
+                              <li>
+                                Kompetencje miękkie z OSP:{" "}
+                                {sheetOsp.softCompetenciesHint}
+                              </li>
+                            ) : null}
+                          </ul>
+                        ) : null}
+                      </div>
+                      {sheet !== sheetOsp.suggestedSheet ? (
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-small"
+                          onClick={() => setSheet(sheetOsp.suggestedSheet)}
+                        >
+                          Zastosuj sugestię
+                        </button>
+                      ) : (
+                        <p className="muted" style={{ margin: "0.35rem 0 0" }}>
+                          Sugestia zastosowana.
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="muted">
+                      Brak dopasowanego OSP — wybierz arkusz ręcznie poniżej.
+                    </p>
+                  )}
+                  <div className="actions" style={{ marginTop: "0.35rem" }}>
+                    <label
+                      className={`check${
+                        sheetOsp?.suggestedSheet === "B" ? " ai-suggested" : ""
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="sheet"
+                        checked={sheet === "B"}
+                        onChange={() => setSheet("B")}
+                      />
+                      <span>{sheetLabel("B")}</span>
+                    </label>
+                    <label
+                      className={`check${
+                        sheetOsp?.suggestedSheet === "C" ? " ai-suggested" : ""
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="sheet"
+                        checked={sheet === "C"}
+                        onChange={() => setSheet("C")}
+                      />
+                      <span>{sheetLabel("C")}</span>
+                    </label>
+                  </div>
+                  <label>
+                    <span>Kotwica cyklu *</span>
+                    <input
+                      type="date"
+                      value={cycleAnchorAt || hiredAt}
+                      onChange={(e) => setCycleAnchorAt(e.target.value)}
+                    />
+                  </label>
+                  {periodicDeadlines ? (
+                    <div className="deadline-grid">
+                      <div className="deadline-card">
+                        <span>Rozmowa o kryteriach (do)</span>
+                        <strong>
+                          {periodicDeadlines.criteriaTalkDeadline}
+                        </strong>
+                      </div>
+                      <div className="deadline-card">
+                        <span>Sporządzenie oceny (cykl)</span>
+                        <strong>{periodicDeadlines.cycleDueAt}</strong>
+                      </div>
+                      <div className="deadline-card">
+                        <span>Kolejny cykl (po tej ocenie)</span>
+                        <strong>{periodicDeadlines.nextCycleDueAt}</strong>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="muted" style={{ marginTop: "1rem" }}>
+                  W kolejnych krokach: kwalifikacja (jedna opcja). Służba
+                  przygotowawcza tylko gdy dotyczy.
+                </p>
+              )}
+            </>
+          )}
+
           {evalKind === "first" && step === 2 && (
             <>
               <h2>Kwalifikacja do pierwszej oceny</h2>
+              <p className="muted">Wybierz jedną opcję.</p>
               <div className="form">
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={firstTime}
-                    onChange={(e) => setFirstTime(e.target.checked)}
-                  />
-                  <span>Pierwszy raz w służbie cywilnej</span>
-                </label>
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={isSubstitute}
-                    onChange={(e) => setIsSubstitute(e.target.checked)}
-                  />
-                  <span>Zatrudniony w celu zastępstwa</span>
-                </label>
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={isKsap}
-                    onChange={(e) => setIsKsap(e.target.checked)}
-                  />
-                  <span>Absolwent KSAP</span>
-                </label>
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={isHigher}
-                    onChange={(e) => setIsHigher(e.target.checked)}
-                  />
-                  <span>Wyższe stanowisko w służbie cywilnej</span>
-                </label>
+                {(
+                  [
+                    ["first_time", "Pierwszy raz w służbie cywilnej"],
+                    ["substitute", "Zatrudniony w celu zastępstwa"],
+                    ["ksap", "Absolwent KSAP"],
+                    ["higher", "Wyższe stanowisko w służbie cywilnej"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <label key={value} className="check">
+                    <input
+                      type="radio"
+                      name="qualPath"
+                      checked={qualPath === value}
+                      onChange={() => setQualificationPath(value)}
+                    />
+                    <span>{label}</span>
+                  </label>
+                ))}
+
+                {qualPath === "ksap" ? (
+                  <fieldset className="qual-followup">
+                    <legend>
+                      Czy absolwent złożył wniosek o zwolnienie ze służby
+                      przygotowawczej?
+                    </legend>
+                    <label className="check">
+                      <input
+                        type="radio"
+                        name="ksapExemption"
+                        checked={ksapExemptionRequested === true}
+                        onChange={() => setKsapExemptionRequested(true)}
+                      />
+                      <span>Tak — złożono wniosek o zwolnienie</span>
+                    </label>
+                    <label className="check">
+                      <input
+                        type="radio"
+                        name="ksapExemption"
+                        checked={ksapExemptionRequested === false}
+                        onChange={() => setKsapExemptionRequested(false)}
+                      />
+                      <span>Nie — bez wniosku (służba przygotowawcza)</span>
+                    </label>
+                  </fieldset>
+                ) : null}
+
+                {needsAgreementQuestion(qualAnswers) ? (
+                  <fieldset className="qual-followup">
+                    <legend>
+                      Czy zostało zawarte porozumienie stron co do podlegania
+                      pierwszej ocenie?
+                    </legend>
+                    <label className="check">
+                      <input
+                        type="radio"
+                        name="agreement"
+                        checked={agreementConcluded === true}
+                        onChange={() => setAgreementConcluded(true)}
+                      />
+                      <span>Tak</span>
+                    </label>
+                    <label className="check">
+                      <input
+                        type="radio"
+                        name="agreement"
+                        checked={agreementConcluded === false}
+                        onChange={() => setAgreementConcluded(false)}
+                      />
+                      <span>Nie</span>
+                    </label>
+                  </fieldset>
+                ) : null}
+
+                {qualPath === "higher" ? (
+                  <p className="hint">
+                    Przy wyższym stanowisku krok służby przygotowawczej zostanie
+                    pominięty (nie dotyczy).
+                  </p>
+                ) : null}
               </div>
               <div className={`eligibility eligibility-${eligibility}`}>
                 Wynik: <strong>{eligibilityLabel(eligibility)}</strong>
+                {qualPath === "ksap" && ksapExemptionRequested === true
+                  ? " · zwolnienie ze służby przygotowawczej"
+                  : ""}
+                {qualPath === "higher" ? " · bez służby przygotowawczej" : ""}
               </div>
             </>
           )}
 
-          {evalKind === "first" && step === 3 && (
+          {evalKind === "first" && showPrepStep && step === 3 && (
             <>
               <h2>Służba przygotowawcza</h2>
               <div className="form">
@@ -470,65 +719,9 @@ export function NewProcessWizardPage() {
             </>
           )}
 
-          {evalKind === "periodic" && step === 2 && (
-            <>
-              <h2>Arkusz B/C i cykl 24 miesięcy</h2>
-              <p className="muted">
-                Termin sporządzenia oceny = kotwica cyklu + 24 miesiące. Kotwica
-                to data zakończenia poprzedniej oceny albo data zatrudnienia na
-                czas nieokreślony.
-              </p>
-              <div className="form">
-                <div className="actions" style={{ marginTop: 0 }}>
-                  <label className="check">
-                    <input
-                      type="radio"
-                      name="sheet"
-                      checked={sheet === "B"}
-                      onChange={() => setSheet("B")}
-                    />
-                    <span>{sheetLabel("B")}</span>
-                  </label>
-                  <label className="check">
-                    <input
-                      type="radio"
-                      name="sheet"
-                      checked={sheet === "C"}
-                      onChange={() => setSheet("C")}
-                    />
-                    <span>{sheetLabel("C")}</span>
-                  </label>
-                </div>
-                <label>
-                  <span>Kotwica cyklu *</span>
-                  <input
-                    type="date"
-                    value={cycleAnchorAt || hiredAt}
-                    onChange={(e) => setCycleAnchorAt(e.target.value)}
-                  />
-                </label>
-                {periodicDeadlines ? (
-                  <div className="deadline-grid">
-                    <div className="deadline-card">
-                      <span>Rozmowa o kryteriach (do)</span>
-                      <strong>{periodicDeadlines.criteriaTalkDeadline}</strong>
-                    </div>
-                    <div className="deadline-card">
-                      <span>Sporządzenie oceny (cykl)</span>
-                      <strong>{periodicDeadlines.cycleDueAt}</strong>
-                    </div>
-                    <div className="deadline-card">
-                      <span>Kolejny cykl (po tej ocenie)</span>
-                      <strong>{periodicDeadlines.nextCycleDueAt}</strong>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            </>
-          )}
-
-          {((evalKind === "first" && step === 4) ||
-            (evalKind === "periodic" && step === 3)) && (
+          {((evalKind === "first" &&
+            step === (showPrepStep ? 4 : 3)) ||
+            (evalKind === "periodic" && step === 2)) && (
             <>
               <h2>Obsada ról</h2>
               <div className="form">
@@ -597,11 +790,7 @@ export function NewProcessWizardPage() {
                 <button
                   className="btn btn-primary"
                   type="button"
-                  disabled={
-                    saving ||
-                    !canNext() ||
-                    (evalKind === "first" && eligibility === "not_eligible")
-                  }
+                  disabled={saving || !canNext()}
                   onClick={() => void createProcess()}
                 >
                   {saving ? "Tworzenie…" : "Utwórz proces"}

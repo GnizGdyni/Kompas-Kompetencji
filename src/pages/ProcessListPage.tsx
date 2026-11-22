@@ -6,10 +6,17 @@ import {
   timelinessForDeadline,
   timelinessLabel,
 } from "../lib/firstEvaluation";
+import {
+  capitalizeFirst,
+  formatOrgUnitShort,
+} from "../lib/formatOrgUnit";
 import { supabase } from "../lib/supabase";
 import {
   EVAL_TYPE_LABELS,
   STATUS_LABELS,
+  statusLabelForCase,
+  canRunEvaluation,
+  isHrRole,
   isStaffRole,
   type Employee,
   type EvaluationCase,
@@ -95,14 +102,21 @@ export function ProcessListPage() {
   }, [rows, q, stage, year, deadlineTo, timeliness]);
 
   function exportCsv() {
+    const escapeCell = (value: string | number | null | undefined) => {
+      const raw = value == null ? "" : String(value);
+      return `"${raw.replaceAll('"', '""')}"`;
+    };
+
     const header = [
       "Pracownik",
+      "Komórka organizacyjna",
       "Stanowisko",
       "Typ oceny",
       "Etap",
       "Najbliższy termin",
       "Terminowość",
-    ];
+    ].map(escapeCell);
+
     const lines = filtered.map((r) => {
       const t = timelinessForDeadline(r.nearest_deadline, r.status);
       const name =
@@ -110,23 +124,31 @@ export function ProcessListPage() {
         r.employee.full_name;
       return [
         name,
-        r.employee.job_title || "",
+        r.employee.org_unit || "",
+        r.employee.job_title
+          ? capitalizeFirst(r.employee.job_title)
+          : "",
         EVAL_TYPE_LABELS[r.evaluation_type],
-        STATUS_LABELS[r.status],
+        statusLabelForCase(r.status, r.evaluation_type),
         r.nearest_deadline || "",
         timelinessLabel(t),
       ]
-        .map((c) => `"${String(c).replaceAll('"', '""')}"`)
+        .map(escapeCell)
         .join(";");
     });
-    const blob = new Blob([[header.join(";"), ...lines].join("\n")], {
-      type: "text/csv;charset=utf-8;",
-    });
+
+    // BOM + CRLF → Excel (PL) poprawnie czyta polskie znaki i kolumny
+    const csv = `\uFEFF${[header.join(";"), ...lines].join("\r\n")}\r\n`;
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = `kompas-procesy-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.rel = "noopener";
+    a.style.display = "none";
+    document.body.appendChild(a);
     a.click();
+    a.remove();
     URL.revokeObjectURL(url);
   }
 
@@ -142,20 +164,34 @@ export function ProcessListPage() {
     return <Navigate to="/login" replace />;
   }
 
+  const hrMode = isHrRole(profile?.role);
+  const canEval = canRunEvaluation(profile?.role);
+
   return (
-    <AppShell title="Procesy">
+    <AppShell title={hrMode ? "Nadzór HR — procesy" : "Procesy oceniania"}>
+      {hrMode ? (
+        <div className="hr-banner">
+          <strong>Widok HR</strong>
+          <span>
+            Podgląd wszystkich procesów. Prowadzenie oceny (arkusz, rozmowy,
+            werdykt) jest zablokowane — robi to przełożony.
+          </span>
+        </div>
+      ) : null}
       <div className="toolbar">
         <div className="filters">
           <input
-            className="filter-input"
+            className="toolbar-control"
             placeholder="Szukaj po nazwisku…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
+            aria-label="Szukaj po nazwisku"
           />
           <select
-            className="filter-input"
+            className="toolbar-control"
             value={stage}
             onChange={(e) => setStage(e.target.value as "" | EvaluationStatus)}
+            aria-label="Etap"
           >
             <option value="">Etap: wszystkie</option>
             {(Object.keys(STATUS_LABELS) as EvaluationStatus[]).map((s) => (
@@ -165,21 +201,10 @@ export function ProcessListPage() {
             ))}
           </select>
           <select
-            className="filter-input"
-            value={timeliness}
-            onChange={(e) =>
-              setTimeliness(e.target.value as "" | "green" | "yellow" | "red")
-            }
-          >
-            <option value="">Status terminu: wszystkie</option>
-            <option value="green">Zielony — w terminie</option>
-            <option value="yellow">Żółty — zbliża się</option>
-            <option value="red">Czerwony — po terminie</option>
-          </select>
-          <select
-            className="filter-input"
+            className="toolbar-control"
             value={year}
             onChange={(e) => setYear(e.target.value)}
+            aria-label="Rok"
           >
             <option value="">Rok: wszystkie</option>
             {years.map((y) => (
@@ -188,22 +213,64 @@ export function ProcessListPage() {
               </option>
             ))}
           </select>
-          <label className="filter-date">
-            <span>Termin do</span>
-            <input
-              type="date"
-              value={deadlineTo}
-              onChange={(e) => setDeadlineTo(e.target.value)}
-            />
-          </label>
+          <input
+            className="toolbar-control toolbar-control-date"
+            type="date"
+            value={deadlineTo}
+            onChange={(e) => setDeadlineTo(e.target.value)}
+            onFocus={(e) => {
+              try {
+                e.currentTarget.showPicker?.();
+              } catch {
+                /* browser bez showPicker / już otwarte */
+              }
+            }}
+            onClick={(e) => {
+              try {
+                e.currentTarget.showPicker?.();
+              } catch {
+                /* ignore */
+              }
+            }}
+            aria-label="Termin do"
+            title="Termin do"
+          />
+          <select
+            className="toolbar-control"
+            value={timeliness}
+            onChange={(e) =>
+              setTimeliness(e.target.value as "" | "green" | "yellow" | "red")
+            }
+            aria-label="Status terminu"
+          >
+            <option value="">Status terminu: wszystkie</option>
+            <option value="green">Zielony — w terminie</option>
+            <option value="yellow">Żółty — zbliża się</option>
+            <option value="red">Czerwony — po terminie</option>
+          </select>
         </div>
-        <div className="actions">
-          <button className="btn btn-ghost" type="button" onClick={exportCsv}>
+        <div className="toolbar-actions">
+          <button
+            className="btn btn-ghost toolbar-control"
+            type="button"
+            onClick={exportCsv}
+          >
             Eksport listy
           </button>
-          <Link className="btn btn-primary" to="/procesy/nowy">
-            + Dodaj pracownika
-          </Link>
+          {canEval ? (
+            <Link className="btn btn-primary toolbar-control" to="/procesy/nowy">
+              Dodaj proces
+            </Link>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-primary toolbar-control"
+              disabled
+              title="Tylko przełożony może zakładać proces"
+            >
+              Dodaj proces
+            </button>
+          )}
         </div>
       </div>
 
@@ -233,8 +300,9 @@ export function ProcessListPage() {
             {filtered.length === 0 ? (
               <tr>
                 <td colSpan={7} className="empty-cell">
-                  Brak procesów. Kliknij „+ Dodaj pracownika”, aby utworzyć
-                  pierwszą sprawę.
+                  {hrMode
+                    ? "Brak procesów w systemie."
+                    : "Brak procesów. Kliknij „Dodaj proces”, aby utworzyć pierwszy proces."}
                 </td>
               </tr>
             ) : (
@@ -246,13 +314,26 @@ export function ProcessListPage() {
                     .join(" ") || r.employee.full_name;
                 return (
                   <tr key={r.id}>
-                    <td>
+                    <td className="cell-employee">
                       <strong>{name}</strong>
-                      <div className="cell-muted">{r.employee.org_unit}</div>
+                      {r.employee.org_unit ? (
+                        <div
+                          className="cell-muted cell-org"
+                          title={r.employee.org_unit}
+                        >
+                          {formatOrgUnitShort(r.employee.org_unit)}
+                        </div>
+                      ) : null}
                     </td>
-                    <td>{r.employee.job_title || "—"}</td>
+                    <td>
+                      {r.employee.job_title
+                        ? capitalizeFirst(r.employee.job_title)
+                        : "—"}
+                    </td>
                     <td>{EVAL_TYPE_LABELS[r.evaluation_type]}</td>
-                    <td>{STATUS_LABELS[r.status]}</td>
+                    <td>
+                      {statusLabelForCase(r.status, r.evaluation_type)}
+                    </td>
                     <td>{r.nearest_deadline || "—"}</td>
                     <td>
                       <span className={`dot dot-${t}`}>

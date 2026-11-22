@@ -1,45 +1,22 @@
-import { Link } from "react-router-dom";
+import { Navigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 
+/** Wejście: zalogowany → procesy, niezalogowany → logowanie. */
 export function HomePage() {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
 
-  return (
-    <div className="page">
-      <header className="hero">
-        <p className="eyebrow">Hackathon · Ministerstwo Cyfryzacji</p>
-        <h1>Kompas Kompetencji</h1>
-        <p className="lead">
-          Panel przełożonego: lista procesów, kreator pracownika i prowadzenie
-          pierwszej oceny krok po kroku.
-        </p>
-        <div className="actions">
-          {user ? (
-            <Link className="btn btn-primary" to="/dashboard">
-              Lista procesów
-            </Link>
-          ) : (
-            <Link className="btn btn-primary" to="/login">
-              Zaloguj się jako przełożony
-            </Link>
-          )}
+  if (loading) {
+    return (
+      <div className="page narrow">
+        <div className="panel login-panel">
+          <p className="muted" style={{ margin: 0, textAlign: "center" }}>
+            Ładowanie…
+          </p>
         </div>
-      </header>
+      </div>
+    );
+  }
 
-      <section className="cards">
-        <article className="card card-blue">
-          <h2>Lista procesów</h2>
-          <p>Pracownik, etap, termin i status terminowości w jednym miejscu.</p>
-        </article>
-        <article className="card card-blue">
-          <h2>Kreator</h2>
-          <p>Dane → kwalifikacja → służba → role → utwórz proces.</p>
-        </article>
-        <article className="card card-blue">
-          <h2>Tylko przełożeni</h2>
-          <p>Pracownik jest obiektem w procesie — bez osobnego konta.</p>
-        </article>
-      </section>
-    </div>
-  );
+  if (user) return <Navigate to="/dashboard" replace />;
+  return <Navigate to="/login" replace />;
 }

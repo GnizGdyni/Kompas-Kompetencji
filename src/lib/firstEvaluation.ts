@@ -1,19 +1,44 @@
 import type { EligibilityResult, EvaluationStatus, PrepServiceStatus } from "../types";
 
+/** Jedna ścieżka kwalifikacji (wybór radio). */
+export type QualificationPath =
+  | "first_time"
+  | "substitute"
+  | "ksap"
+  | "higher";
+
 export type QualificationAnswers = {
+  path: QualificationPath;
+  /** Absolwent KSAP: czy złożył wniosek o zwolnienie ze służby przygotowawczej. */
+  ksapExemptionRequested: boolean | null;
+  /** Zastępstwo: czy zawarto porozumienie stron co do pierwszej oceny. */
+  agreementConcluded: boolean | null;
+};
+
+/** Flagi zapisywane w evaluation_cases. */
+export function qualificationToFlags(a: QualificationAnswers): {
   firstTimeCivilService: boolean;
   isSubstitute: boolean;
   isKsapGraduate: boolean;
   isHigherPosition: boolean;
-};
+} {
+  return {
+    firstTimeCivilService: a.path === "first_time",
+    isSubstitute: a.path === "substitute",
+    isKsapGraduate: a.path === "ksap",
+    isHigherPosition: a.path === "higher",
+  };
+}
 
 export function resolveEligibility(
   a: QualificationAnswers,
 ): EligibilityResult {
-  if (a.isSubstitute && !a.firstTimeCivilService) {
+  if (a.path === "higher" || a.path === "ksap" || a.path === "first_time") {
+    return "eligible";
+  }
+  if (a.path === "substitute") {
     return "eligible_with_consent";
   }
-  if (a.firstTimeCivilService) return "eligible";
   return "not_eligible";
 }
 
@@ -24,7 +49,7 @@ export function eligibilityLabel(result: EligibilityResult): string {
     case "not_eligible":
       return "Nie podlega pierwszej ocenie";
     case "eligible_with_consent":
-      return "Może podlegać za zgodą stron";
+      return "Może podlegać za zgodą stron (porozumienie)";
   }
 }
 
@@ -32,13 +57,37 @@ export function resolvePrepDefaults(a: QualificationAnswers): {
   prepServiceStatus: PrepServiceStatus;
   examRequired: boolean;
 } {
-  if (a.isKsapGraduate || a.isHigherPosition) {
+  if (a.path === "higher") {
     return { prepServiceStatus: "not_applicable", examRequired: false };
   }
-  if (a.isSubstitute && !a.firstTimeCivilService) {
+  if (a.path === "ksap") {
+    if (a.ksapExemptionRequested === true) {
+      return { prepServiceStatus: "exempt", examRequired: false };
+    }
+    return { prepServiceStatus: "required", examRequired: true };
+  }
+  if (a.path === "substitute") {
     return { prepServiceStatus: "not_applicable", examRequired: false };
   }
   return { prepServiceStatus: "required", examRequired: true };
+}
+
+/** Czy pokazywać krok „Służba przygotowawcza”. */
+export function shouldShowPrepStep(a: QualificationAnswers): boolean {
+  return resolvePrepDefaults(a).prepServiceStatus === "required";
+}
+
+/** Porozumienie — wyłącznie przy zatrudnieniu na zastępstwo. */
+export function needsAgreementQuestion(a: QualificationAnswers): boolean {
+  return a.path === "substitute";
+}
+
+export function qualificationComplete(a: QualificationAnswers): boolean {
+  if (a.path === "first_time") return true;
+  if (a.path === "higher") return true;
+  if (a.path === "ksap") return a.ksapExemptionRequested != null;
+  if (a.path === "substitute") return a.agreementConcluded != null;
+  return false;
 }
 
 export function addDays(isoDate: string, days: number): string {
@@ -62,14 +111,12 @@ export function computeDeadlines(input: {
 }) {
   const introTalkDeadline = addDays(input.hiredAt, 21);
 
-  // Sprawozdanie po min. 8 miesiącach; okres ≥ 7 miesięcy
   const defaultReportFrom = addMonths(input.hiredAt, 8);
   const defaultReportTo = addDays(defaultReportFrom, 30);
 
   const reportDueFrom = input.reportFrom || defaultReportFrom;
   const reportDueTo = input.reportTo || defaultReportTo;
 
-  // Ocena nie później niż miesiąc przed końcem umowy
   let assessmentWindowTo: string;
   if (input.contractEndAt) {
     assessmentWindowTo = addMonths(input.contractEndAt, -1);

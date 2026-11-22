@@ -131,8 +131,8 @@ export const ROLE_COLORS: Record<AppRole, string> = {
 
 export const STATUS_LABELS: Record<EvaluationStatus, string> = {
   draft: "Rozmowa wstępna",
-  intro_done: "Okres oceny",
-  awaiting_report: "Okres oceny",
+  intro_done: "Służba przygotowawcza",
+  awaiting_report: "Służba przygotowawcza",
   in_assessment: "Rozmowa i arkusz",
   interview_done: "Rozmowa i arkusz",
   completed: "Zakończony",
@@ -144,6 +144,31 @@ export const EVAL_TYPE_LABELS = {
   periodic: "Ocena okresowa",
 } as const;
 
+/** Etykieta etapu z uwzględnieniem typu oceny. */
+export function statusLabelForCase(
+  status: EvaluationStatus,
+  evaluationType: "first" | "periodic" | string,
+): string {
+  if (status === "intro_done" || status === "awaiting_report") {
+    return evaluationType === "periodic"
+      ? "Okres podlegający ocenie"
+      : "Służba przygotowawcza";
+  }
+  if (status === "draft" && evaluationType === "periodic") {
+    return "Kryteria i termin";
+  }
+  return STATUS_LABELS[status];
+}
+
 export function isStaffRole(role: string | null | undefined): role is AppRole {
   return role === "supervisor" || role === "hr" || role === "unit_head";
+}
+
+export function isHrRole(role: string | null | undefined): boolean {
+  return role === "hr";
+}
+
+/** HR: podgląd/nadzór. Przełożony/kierujący: prowadzenie oceny. */
+export function canRunEvaluation(role: string | null | undefined): boolean {
+  return isStaffRole(role) && !isHrRole(role);
 }
